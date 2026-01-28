@@ -1,0 +1,879 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== USER & AUTHENTICATION ====================
+
+model User {
+  id                String    @id @default(uuid())
+  email             String    @unique
+  password          String
+  firstName         String
+  lastName          String
+  role              UserRole  @default(PROVIDER)
+  specialty         String?
+  npiNumber         String?
+  licenseNumber     String?
+  phone             String?
+  profileImage      String?
+  isActive          Boolean   @default(true)
+  lastLogin         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  // Relations
+  notes             Note[]
+  recordings        Recording[]
+  templates         NoteTemplate[]
+  comments          Comment[]
+  amendments        Amendment[]
+  coSignatures      CoSignature[]
+  auditLogs         AuditLog[]
+  accessControls    AccessControl[]
+  sessions          Session[]
+
+  // Documentation module relations
+  docs              Doc[]
+  docVersions       DocVersion[]
+  docTemplates      DocTemplate[]
+  docComments       DocComment[]
+  docCollaborators  DocCollaborator[]
+  docExports        DocExport[]
+  repositories      Repository[]
+
+  @@index([email])
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+}
+
+enum UserRole {
+  ADMIN
+  PROVIDER
+  NURSE
+  MEDICAL_ASSISTANT
+  BILLING_STAFF
+  AUDITOR
+}
+
+// ==================== NOTE MANAGEMENT ====================
+
+model Note {
+  id              String       @id @default(uuid())
+  patientId       String
+  patientName     String
+  encounterDate   DateTime
+  noteType        NoteType
+  status          NoteStatus   @default(DRAFT)
+  content         Json
+  sections        Json?
+  summary         String?      @db.Text
+
+  // Template reference
+  templateId      String?
+  template        NoteTemplate? @relation(fields: [templateId], references: [id])
+
+  // Author
+  authorId        String
+  author          User         @relation(fields: [authorId], references: [id])
+
+  // AI-generated data
+  aiTranscription String?      @db.Text
+  aiSummary       String?      @db.Text
+  aiCodes         Json?
+  aiQualityScore  Float?
+  aiFollowUps     Json?
+
+  // Encryption for HIPAA
+  isEncrypted     Boolean      @default(true)
+  encryptionKey   String?
+
+  // Timestamps
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  signedAt        DateTime?
+  lockedAt        DateTime?
+
+  // Relations
+  versions        NoteVersion[]
+  recordings      Recording[]
+  comments        Comment[]
+  amendments      Amendment[]
+  coSignatures    CoSignature[]
+  medicalCodes    MedicalCode[]
+  auditLogs       AuditLog[]
+
+  @@index([patientId])
+  @@index([authorId])
+  @@index([status])
+  @@index([encounterDate])
+}
+
+model NoteVersion {
+  id        String   @id @default(uuid())
+  noteId    String
+  version   Int
+  content   Json
+  sections  Json?
+  changedBy String
+  changeLog String?
+  createdAt DateTime @default(now())
+
+  note      Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@unique([noteId, version])
+  @@index([noteId])
+}
+
+model NoteTemplate {
+  id            String           @id @default(uuid())
+  name          String
+  description   String?
+  noteType      NoteType
+  specialty     String?
+  sections      Json
+  defaultValues Json?
+  isSystem      Boolean          @default(false)
+  isActive      Boolean          @default(true)
+
+  creatorId     String?
+  creator       User?            @relation(fields: [creatorId], references: [id])
+
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  notes         Note[]
+  customSections TemplateSection[]
+
+  @@index([noteType])
+  @@index([specialty])
+}
+
+model TemplateSection {
+  id          String       @id @default(uuid())
+  templateId  String
+  name        String
+  label       String
+  fieldType   FieldType
+  options     Json?
+  isRequired  Boolean      @default(false)
+  orderIndex  Int
+  defaultValue String?
+
+  template    NoteTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+}
+
+enum NoteType {
+  SOAP
+  PROGRESS
+  CONSULTATION
+  PROCEDURE
+  ADMISSION
+  DISCHARGE
+  OPERATIVE
+  EMERGENCY
+  FOLLOWUP
+  TELEHEALTH
+}
+
+enum NoteStatus {
+  DRAFT
+  PENDING_REVIEW
+  PENDING_COSIGN
+  SIGNED
+  AMENDED
+  LOCKED
+}
+
+enum FieldType {
+  TEXT
+  TEXTAREA
+  SELECT
+  MULTISELECT
+  CHECKBOX
+  DATE
+  TIME
+  NUMBER
+  VITALS
+  DIAGNOSIS
+  MEDICATION
+}
+
+// ==================== RECORDING ====================
+
+model Recording {
+  id              String          @id @default(uuid())
+  noteId          String?
+  userId          String
+  type            RecordingType
+  status          RecordingStatus @default(PROCESSING)
+
+  // File info
+  fileName        String
+  filePath        String
+  fileSize        Int
+  duration        Int?            // in seconds
+  mimeType        String
+
+  // AI Processing
+  transcription   String?         @db.Text
+  speakers        Json?           // Speaker diarization
+  medicalTerms    Json?           // Extracted medical terminology
+
+  // Timestamps
+  recordedAt      DateTime
+  processedAt     DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  note            Note?           @relation(fields: [noteId], references: [id])
+  user            User            @relation(fields: [userId], references: [id])
+
+  @@index([noteId])
+  @@index([userId])
+}
+
+enum RecordingType {
+  AUDIO
+  VIDEO
+  SCREEN
+}
+
+enum RecordingStatus {
+  UPLOADING
+  PROCESSING
+  TRANSCRIBING
+  COMPLETED
+  FAILED
+}
+
+// ==================== COLLABORATION ====================
+
+model Comment {
+  id        String   @id @default(uuid())
+  noteId    String
+  userId    String
+  content   String   @db.Text
+  isResolved Boolean @default(false)
+  parentId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  note      Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
+  parent    Comment? @relation("CommentReplies", fields: [parentId], references: [id])
+  replies   Comment[] @relation("CommentReplies")
+
+  @@index([noteId])
+  @@index([userId])
+}
+
+model Amendment {
+  id          String   @id @default(uuid())
+  noteId      String
+  userId      String
+  reason      String
+  oldContent  Json
+  newContent  Json
+  status      AmendmentStatus @default(PENDING)
+  approvedBy  String?
+  approvedAt  DateTime?
+  createdAt   DateTime @default(now())
+
+  note        Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([noteId])
+  @@index([userId])
+}
+
+model CoSignature {
+  id          String   @id @default(uuid())
+  noteId      String
+  requesterId String
+  signerId    String
+  status      CoSignStatus @default(PENDING)
+  comments    String?
+  requestedAt DateTime @default(now())
+  signedAt    DateTime?
+
+  note        Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  signer      User     @relation(fields: [signerId], references: [id])
+
+  @@index([noteId])
+  @@index([signerId])
+}
+
+enum AmendmentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum CoSignStatus {
+  PENDING
+  SIGNED
+  REJECTED
+}
+
+// ==================== MEDICAL CODING ====================
+
+model MedicalCode {
+  id          String   @id @default(uuid())
+  noteId      String
+  codeType    CodeType
+  code        String
+  description String
+  confidence  Float?   // AI confidence score
+  isVerified  Boolean  @default(false)
+  verifiedBy  String?
+  createdAt   DateTime @default(now())
+
+  note        Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@index([noteId])
+  @@index([code])
+}
+
+enum CodeType {
+  CPT
+  ICD10
+  HCPCS
+  SNOMED
+}
+
+model CodeReference {
+  id          String   @id @default(uuid())
+  codeType    CodeType
+  code        String
+  description String
+  category    String?
+  isActive    Boolean  @default(true)
+
+  @@unique([codeType, code])
+  @@index([code])
+}
+
+// ==================== COMPLIANCE & AUDIT ====================
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String?
+  noteId      String?
+  action      AuditAction
+  entityType  String
+  entityId    String
+  oldValues   Json?
+  newValues   Json?
+  ipAddress   String?
+  userAgent   String?
+  timestamp   DateTime @default(now())
+
+  user        User?    @relation(fields: [userId], references: [id])
+  note        Note?    @relation(fields: [noteId], references: [id])
+
+  @@index([userId])
+  @@index([noteId])
+  @@index([action])
+  @@index([timestamp])
+}
+
+model AccessControl {
+  id          String   @id @default(uuid())
+  userId      String
+  resource    String
+  permission  Permission
+  grantedBy   String?
+  grantedAt   DateTime @default(now())
+  expiresAt   DateTime?
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, resource, permission])
+  @@index([userId])
+}
+
+model RetentionPolicy {
+  id              String   @id @default(uuid())
+  name            String
+  description     String?
+  entityType      String
+  retentionDays   Int
+  action          RetentionAction
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+enum AuditAction {
+  CREATE
+  READ
+  UPDATE
+  DELETE
+  SIGN
+  COSIGN
+  AMEND
+  EXPORT
+  PRINT
+  LOGIN
+  LOGOUT
+  ACCESS_DENIED
+}
+
+enum Permission {
+  READ
+  WRITE
+  DELETE
+  SIGN
+  COSIGN
+  ADMIN
+}
+
+enum RetentionAction {
+  ARCHIVE
+  DELETE
+  NOTIFY
+}
+
+// ==================== INTEGRATIONS ====================
+
+model Integration {
+  id            String            @id @default(uuid())
+  name          String
+  type          IntegrationType
+  status        IntegrationStatus @default(INACTIVE)
+  configuration Json
+  credentials   Json?             // Encrypted
+  lastSyncAt    DateTime?
+  syncErrors    Json?
+  isActive      Boolean           @default(true)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  syncLogs      IntegrationSyncLog[]
+}
+
+model IntegrationSyncLog {
+  id            String   @id @default(uuid())
+  integrationId String
+  status        SyncStatus
+  recordsSync   Int      @default(0)
+  errors        Json?
+  startedAt     DateTime
+  completedAt   DateTime?
+
+  integration   Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@index([integrationId])
+}
+
+enum IntegrationType {
+  EHR
+  PRACTICE_MANAGEMENT
+  BILLING
+  LAB
+  PHARMACY
+  IMAGING
+}
+
+enum IntegrationStatus {
+  ACTIVE
+  INACTIVE
+  ERROR
+  SYNCING
+}
+
+enum SyncStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+  PARTIAL
+}
+
+// ==================== SPECIALTY & SETTINGS ====================
+
+model Specialty {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
+
+model SystemSetting {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  value       String
+  description String?
+  updatedAt   DateTime @updatedAt
+}
+
+// ==================== DOCUMENTATION MODULE ====================
+
+model Doc {
+  id            String        @id @default(uuid())
+  title         String
+  slug          String        @unique
+  content       String        @db.Text
+  excerpt       String?       @db.Text
+  status        DocStatus     @default(DRAFT)
+  visibility    DocVisibility @default(PRIVATE)
+
+  // Template reference
+  templateId    String?
+  template      DocTemplate?  @relation(fields: [templateId], references: [id])
+
+  // Category
+  categoryId    String?
+  category      DocCategory?  @relation(fields: [categoryId], references: [id])
+
+  // Author
+  authorId      String
+  author        User          @relation(fields: [authorId], references: [id])
+
+  // Metadata
+  readingTime   Int?          // in minutes
+  wordCount     Int?
+  metadata      Json?         // Custom metadata
+
+  // Timestamps
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  publishedAt   DateTime?
+
+  // Relations
+  versions      DocVersion[]
+  tags          DocTagAssignment[]
+  comments      DocComment[]
+  collaborators DocCollaborator[]
+  exports       DocExport[]
+  searchIndex   DocSearchIndex?
+
+  @@index([authorId])
+  @@index([categoryId])
+  @@index([status])
+  @@index([visibility])
+  @@index([publishedAt])
+}
+
+model DocVersion {
+  id          String   @id @default(uuid())
+  docId       String
+  version     Int
+  title       String
+  content     String   @db.Text
+  changelog   String?  @db.Text
+  createdById String
+  createdAt   DateTime @default(now())
+
+  doc         Doc      @relation(fields: [docId], references: [id], onDelete: Cascade)
+  createdBy   User     @relation(fields: [createdById], references: [id])
+
+  @@unique([docId, version])
+  @@index([docId])
+}
+
+model DocTemplate {
+  id              String          @id @default(uuid())
+  name            String
+  description     String?
+  type            DocTemplateType
+  content         String          @db.Text  // Template content with placeholders
+  structure       Json?           // Template structure/schema
+  isSystem        Boolean         @default(false)
+  isActive        Boolean         @default(true)
+
+  creatorId       String?
+  creator         User?           @relation(fields: [creatorId], references: [id])
+
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  docs            Doc[]
+
+  @@index([type])
+}
+
+model DocCategory {
+  id          String        @id @default(uuid())
+  name        String
+  slug        String        @unique
+  description String?
+  icon        String?       // Icon name/class
+  color       String?       // Hex color
+  orderIndex  Int           @default(0)
+
+  // Hierarchical structure
+  parentId    String?
+  parent      DocCategory?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children    DocCategory[] @relation("CategoryHierarchy")
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  docs        Doc[]
+
+  @@index([parentId])
+}
+
+model DocTag {
+  id          String             @id @default(uuid())
+  name        String             @unique
+  slug        String             @unique
+  color       String?            // Hex color
+
+  createdAt   DateTime           @default(now())
+
+  docs        DocTagAssignment[]
+}
+
+model DocTagAssignment {
+  id        String   @id @default(uuid())
+  docId     String
+  tagId     String
+
+  doc       Doc      @relation(fields: [docId], references: [id], onDelete: Cascade)
+  tag       DocTag   @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([docId, tagId])
+  @@index([docId])
+  @@index([tagId])
+}
+
+model DocComment {
+  id          String       @id @default(uuid())
+  docId       String
+  userId      String
+  content     String       @db.Text
+  isResolved  Boolean      @default(false)
+
+  // For inline comments
+  lineStart   Int?
+  lineEnd     Int?
+
+  // Threading
+  parentId    String?
+
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  doc         Doc          @relation(fields: [docId], references: [id], onDelete: Cascade)
+  user        User         @relation(fields: [userId], references: [id])
+  parent      DocComment?  @relation("DocCommentReplies", fields: [parentId], references: [id])
+  replies     DocComment[] @relation("DocCommentReplies")
+
+  @@index([docId])
+  @@index([userId])
+}
+
+model DocCollaborator {
+  id          String              @id @default(uuid())
+  docId       String
+  userId      String
+  permission  DocCollaboratorPerm @default(VIEW)
+
+  invitedById String?
+  invitedAt   DateTime            @default(now())
+  acceptedAt  DateTime?
+
+  doc         Doc                 @relation(fields: [docId], references: [id], onDelete: Cascade)
+  user        User                @relation(fields: [userId], references: [id])
+
+  @@unique([docId, userId])
+  @@index([docId])
+  @@index([userId])
+}
+
+model DocExport {
+  id          String       @id @default(uuid())
+  docId       String
+  format      ExportFormat
+  status      ExportStatus @default(PENDING)
+  filePath    String?
+  fileSize    Int?
+  error       String?
+
+  requestedById String
+  requestedAt   DateTime   @default(now())
+  completedAt   DateTime?
+
+  doc           Doc        @relation(fields: [docId], references: [id], onDelete: Cascade)
+  requestedBy   User       @relation(fields: [requestedById], references: [id])
+
+  @@index([docId])
+  @@index([status])
+}
+
+model DocSearchIndex {
+  id            String   @id @default(uuid())
+  docId         String   @unique
+  searchVector  String   @db.Text  // Concatenated searchable content
+  titleVector   String   // Title for search ranking
+
+  lastIndexedAt DateTime @default(now())
+
+  doc           Doc      @relation(fields: [docId], references: [id], onDelete: Cascade)
+
+  @@index([docId])
+}
+
+// ==================== REPOSITORY INTEGRATION ====================
+
+model Repository {
+  id              String         @id @default(uuid())
+  name            String
+  fullName        String         // owner/repo format
+  provider        RepoProvider   @default(GITHUB)
+  url             String
+  branch          String         @default("main")
+
+  // OAuth/Access
+  accessToken     String?        // Encrypted
+  webhookSecret   String?
+  webhookId       String?
+
+  // Sync settings
+  syncEnabled     Boolean        @default(true)
+  syncPaths       Json?          // Paths to scan for docs
+  lastSyncAt      DateTime?
+  lastCommitSha   String?
+
+  // Owner
+  createdById     String
+  createdBy       User           @relation(fields: [createdById], references: [id])
+
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  parsedFiles     ParsedCodeFile[]
+  webhookEvents   WebhookEvent[]
+
+  @@unique([provider, fullName])
+  @@index([createdById])
+}
+
+model ParsedCodeFile {
+  id            String     @id @default(uuid())
+  repositoryId  String
+  filePath      String
+  language      String     // js, ts, py, etc.
+
+  // Parsed data
+  functions     Json?      // Array of function docs
+  classes       Json?      // Array of class docs
+  interfaces    Json?      // Array of interface docs (TS)
+  types         Json?      // Array of type docs
+  exports       Json?      // Array of exports
+  imports       Json?      // Array of imports
+  comments      Json?      // Top-level comments
+
+  // File metadata
+  fileHash      String     // For change detection
+  lineCount     Int?
+
+  parsedAt      DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  repository    Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([repositoryId, filePath])
+  @@index([repositoryId])
+  @@index([language])
+}
+
+model WebhookEvent {
+  id            String     @id @default(uuid())
+  repositoryId  String
+  eventType     String     // push, pull_request, etc.
+  payload       Json
+
+  processedAt   DateTime?
+  status        WebhookEventStatus @default(PENDING)
+  error         String?
+
+  receivedAt    DateTime   @default(now())
+
+  repository    Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@index([repositoryId])
+  @@index([status])
+}
+
+// ==================== DOCUMENTATION ENUMS ====================
+
+enum DocStatus {
+  DRAFT
+  IN_REVIEW
+  PUBLISHED
+  ARCHIVED
+}
+
+enum DocVisibility {
+  PRIVATE
+  INTERNAL
+  PUBLIC
+}
+
+enum DocTemplateType {
+  API_REFERENCE
+  USER_GUIDE
+  CHANGELOG
+  TUTORIAL
+  FAQ
+  README
+  ARCHITECTURE
+  CUSTOM
+}
+
+enum DocCollaboratorPerm {
+  VIEW
+  COMMENT
+  EDIT
+  ADMIN
+}
+
+enum ExportFormat {
+  PDF
+  HTML
+  DOCX
+  MARKDOWN
+}
+
+enum ExportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum RepoProvider {
+  GITHUB
+  GITLAB
+  BITBUCKET
+}
+
+enum WebhookEventStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
