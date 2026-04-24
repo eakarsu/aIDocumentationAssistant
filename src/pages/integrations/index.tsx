@@ -2,6 +2,9 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '@/components/Layout';
 import { useAuth } from '@/contexts/AuthContext';
+import { useToast } from '@/components/ToastContext';
+import DetailModal from '@/components/DetailModal';
+import { CardSkeleton } from '@/components/SkeletonLoader';
 import api from '@/lib/api';
 
 interface EnumOption {
@@ -30,6 +33,7 @@ const integrationDescriptions: Record<string, string> = {
 export default function IntegrationsPage() {
   const { isAuthenticated, isLoading, user } = useAuth();
   const router = useRouter();
+  const { showToast } = useToast();
   const [integrations, setIntegrations] = useState<any[]>([]);
   const [integrationTypes, setIntegrationTypes] = useState<EnumOption[]>([]);
   const [integrationStatuses, setIntegrationStatuses] = useState<EnumOption[]>([]);
@@ -41,6 +45,10 @@ export default function IntegrationsPage() {
     clientId: '',
     clientSecret: '',
   });
+
+  // Detail modal
+  const [selectedIntegration, setSelectedIntegration] = useState<any>(null);
+  const [showDetailModal, setShowDetailModal] = useState(false);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -73,12 +81,14 @@ export default function IntegrationsPage() {
       setIntegrations(data);
     } catch (error) {
       console.error('Failed to load integrations:', error);
+      showToast('Failed to load integrations', 'error');
     } finally {
       setLoading(false);
     }
   };
 
-  const openConfigModal = (integration: any) => {
+  const openConfigModal = (e: React.MouseEvent, integration: any) => {
+    e.stopPropagation();
     setEditingIntegration(integration);
     setFormData({
       apiEndpoint: integration.configuration?.apiEndpoint || '',
@@ -109,21 +119,27 @@ export default function IntegrationsPage() {
       });
 
       setShowModal(false);
+      showToast(`${editingIntegration.name} configuration saved`, 'success');
       loadIntegrations();
     } catch (error: any) {
-      alert(error.message || 'Failed to save integration');
+      showToast(error.message || 'Failed to save integration', 'error');
     }
   };
 
-  const handleToggle = async (integration: any) => {
+  const handleToggle = async (e: React.MouseEvent, integration: any) => {
+    e.stopPropagation();
     try {
       await api.updateIntegration(integration.id, {
         isActive: !integration.isActive,
         status: !integration.isActive ? 'ACTIVE' : 'INACTIVE',
       });
+      showToast(
+        `${integration.name} ${!integration.isActive ? 'enabled' : 'disabled'}`,
+        'success'
+      );
       loadIntegrations();
     } catch (error: any) {
-      alert(error.message || 'Failed to toggle integration');
+      showToast(error.message || 'Failed to toggle integration', 'error');
     }
   };
 
@@ -133,6 +149,40 @@ export default function IntegrationsPage() {
 
   const getStatusLabel = (value: string) => {
     return integrationStatuses.find(s => s.value === value)?.label || value;
+  };
+
+  const handleCardClick = (integration: any) => {
+    setSelectedIntegration(integration);
+    setShowDetailModal(true);
+  };
+
+  const handleEditFromModal = () => {
+    if (selectedIntegration) {
+      setShowDetailModal(false);
+      setEditingIntegration(selectedIntegration);
+      setFormData({
+        apiEndpoint: selectedIntegration.configuration?.apiEndpoint || '',
+        clientId: selectedIntegration.configuration?.clientId || '',
+        clientSecret: '',
+      });
+      setShowModal(true);
+    }
+  };
+
+  const getDetailFields = (integration: any) => {
+    const fields: { label: string; value: string }[] = [
+      { label: 'Name', value: integration.name },
+      { label: 'Type', value: getTypeLabel(integration.type) },
+      { label: 'Status', value: getStatusLabel(integration.status) },
+      { label: 'Enabled', value: integration.isActive ? 'Yes' : 'No' },
+      { label: 'API Endpoint', value: integration.configuration?.apiEndpoint || 'Not configured' },
+      { label: 'Client ID', value: integration.configuration?.clientId || 'Not configured' },
+      { label: 'Last Sync', value: integration.lastSyncAt ? new Date(integration.lastSyncAt).toLocaleString() : 'Never' },
+      { label: 'Created', value: new Date(integration.createdAt).toLocaleString() },
+      { label: 'Updated', value: new Date(integration.updatedAt).toLocaleString() },
+      { label: 'ID', value: integration.id },
+    ];
+    return fields;
   };
 
   if (isLoading || !isAuthenticated) {
@@ -153,16 +203,25 @@ export default function IntegrationsPage() {
       {/* Integration Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {loading ? (
-          <div className="col-span-full flex justify-center py-8">
-            <div className="spinner"></div>
-          </div>
+          <>
+            <CardSkeleton />
+            <CardSkeleton />
+            <CardSkeleton />
+            <CardSkeleton />
+            <CardSkeleton />
+            <CardSkeleton />
+          </>
         ) : integrations.length === 0 ? (
           <div className="col-span-full text-center py-8 text-gray-500">
             No integrations configured.
           </div>
         ) : (
           integrations.map((integration) => (
-            <div key={integration.id} className="card">
+            <div
+              key={integration.id}
+              className="card cursor-pointer hover:shadow-lg transition-shadow"
+              onClick={() => handleCardClick(integration)}
+            >
               <div className="flex items-start justify-between mb-4">
                 <div className="flex items-center">
                   <span className="text-3xl mr-3">{integrationIcons[integration.type] || '🔗'}</span>
@@ -201,13 +260,13 @@ export default function IntegrationsPage() {
               {user?.role === 'ADMIN' && (
                 <div className="flex space-x-2 pt-4 border-t">
                   <button
-                    onClick={() => openConfigModal(integration)}
+                    onClick={(e) => openConfigModal(e, integration)}
                     className="btn btn-outline text-sm flex-1"
                   >
                     Configure
                   </button>
                   <button
-                    onClick={() => handleToggle(integration)}
+                    onClick={(e) => handleToggle(e, integration)}
                     className={`btn text-sm ${integration.isActive ? 'btn-danger' : 'btn-success'}`}
                   >
                     {integration.isActive ? 'Disable' : 'Enable'}
@@ -290,6 +349,19 @@ export default function IntegrationsPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Detail Modal */}
+      {showDetailModal && selectedIntegration && (
+        <DetailModal
+          title={`Integration: ${selectedIntegration.name}`}
+          fields={getDetailFields(selectedIntegration)}
+          onClose={() => {
+            setShowDetailModal(false);
+            setSelectedIntegration(null);
+          }}
+          onEdit={user?.role === 'ADMIN' ? handleEditFromModal : undefined}
+        />
       )}
     </Layout>
   );

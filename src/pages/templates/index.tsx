@@ -2,7 +2,11 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '@/components/Layout';
 import { useAuth } from '@/contexts/AuthContext';
+import { useToast } from '@/components/ToastContext';
 import api from '@/lib/api';
+import DetailModal from '@/components/DetailModal';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { CardSkeleton } from '@/components/SkeletonLoader';
 
 interface EnumOption {
   value: string;
@@ -12,6 +16,7 @@ interface EnumOption {
 export default function TemplatesPage() {
   const { isAuthenticated, isLoading, user } = useAuth();
   const router = useRouter();
+  const { addToast } = useToast();
   const [templates, setTemplates] = useState<any[]>([]);
   const [specialties, setSpecialties] = useState<any[]>([]);
   const [noteTypes, setNoteTypes] = useState<EnumOption[]>([]);
@@ -27,6 +32,18 @@ export default function TemplatesPage() {
     specialty: '',
     sections: [] as any[],
   });
+
+  // Row detail modal
+  const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
+  const [showDetailModal, setShowDetailModal] = useState(false);
+
+  // Confirm dialog for delete
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [templateToDelete, setTemplateToDelete] = useState<string | null>(null);
+
+  // Bulk selection
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -72,8 +89,32 @@ export default function TemplatesPage() {
       setSpecialties(specialtiesData);
     } catch (error) {
       console.error('Failed to load data:', error);
+      addToast('Failed to load templates', 'error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Card click handler - show detail modal
+  const handleCardClick = (template: any) => {
+    setSelectedTemplate(template);
+    setShowDetailModal(true);
+  };
+
+  // Edit from detail modal
+  const handleEditFromModal = () => {
+    if (selectedTemplate) {
+      setShowDetailModal(false);
+      openEditModal(selectedTemplate);
+    }
+  };
+
+  // Delete from detail modal
+  const handleDeleteFromModal = () => {
+    if (selectedTemplate) {
+      setTemplateToDelete(selectedTemplate.id);
+      setShowDetailModal(false);
+      setShowDeleteConfirm(true);
     }
   };
 
@@ -105,24 +146,61 @@ export default function TemplatesPage() {
     try {
       if (editingTemplate) {
         await api.updateTemplate(editingTemplate.id, formData);
+        addToast('Template updated successfully', 'success');
       } else {
         await api.createTemplate(formData);
+        addToast('Template created successfully', 'success');
       }
       setShowModal(false);
       loadData();
     } catch (error: any) {
-      alert(error.message || 'Failed to save template');
+      addToast(error.message || 'Failed to save template', 'error');
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this template?')) return;
-
+  // Confirm single delete
+  const handleConfirmDelete = async () => {
+    if (!templateToDelete) return;
     try {
-      await api.deleteTemplate(id);
+      await api.deleteTemplate(templateToDelete);
+      addToast('Template deleted successfully', 'success');
+      setShowDeleteConfirm(false);
+      setTemplateToDelete(null);
       loadData();
     } catch (error: any) {
-      alert(error.message || 'Failed to delete template');
+      addToast(error.message || 'Failed to delete template', 'error');
+    }
+  };
+
+  // Bulk selection
+  const toggleSelect = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // Bulk delete
+  const handleBulkDelete = async () => {
+    try {
+      let deletedCount = 0;
+      for (const id of selectedIds) {
+        try {
+          await api.deleteTemplate(id);
+          deletedCount++;
+        } catch (e) {
+          // skip system templates
+        }
+      }
+      addToast(`Deleted ${deletedCount} templates`, 'success');
+      setSelectedIds(new Set());
+      setShowBulkDeleteConfirm(false);
+      loadData();
+    } catch (error: any) {
+      addToast(error.message || 'Bulk delete failed', 'error');
     }
   };
 
@@ -209,20 +287,57 @@ export default function TemplatesPage() {
         </div>
       </div>
 
+      {/* Bulk Actions Bar */}
+      {selectedIds.size > 0 && (
+        <div className="card mb-4 bg-blue-50 border border-blue-200">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-blue-800">
+              {selectedIds.size} template{selectedIds.size > 1 ? 's' : ''} selected
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowBulkDeleteConfirm(true)}
+                className="px-3 py-1.5 text-xs font-medium bg-red-100 hover:bg-red-200 text-red-800 rounded-lg"
+              >
+                Delete Selected
+              </button>
+              <button
+                onClick={() => setSelectedIds(new Set())}
+                className="px-3 py-1.5 text-xs font-medium bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg"
+              >
+                Clear Selection
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Templates Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {loading ? (
-          <div className="col-span-full flex justify-center py-8">
-            <div className="spinner"></div>
-          </div>
+          Array.from({ length: 6 }).map((_, i) => <CardSkeleton key={i} />)
         ) : templates.length === 0 ? (
           <div className="col-span-full text-center py-8 text-gray-500">
             No templates found.
           </div>
         ) : (
           templates.map((template) => (
-            <div key={template.id} className="card">
-              <div className="flex items-start justify-between mb-3">
+            <div
+              key={template.id}
+              className="card cursor-pointer hover:shadow-lg transition-shadow duration-200 hover:ring-2 hover:ring-blue-300 relative"
+              onClick={() => handleCardClick(template)}
+            >
+              {/* Checkbox */}
+              <div className="absolute top-3 right-3" onClick={(e) => e.stopPropagation()}>
+                <input
+                  type="checkbox"
+                  checked={selectedIds.has(template.id)}
+                  onChange={(e) => { e.stopPropagation(); toggleSelect(template.id, e as any); }}
+                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="flex items-start justify-between mb-3 pr-8">
                 <div>
                   <h3 className="font-semibold text-gray-900">{template.name}</h3>
                   <div className="flex items-center space-x-2 mt-1">
@@ -244,7 +359,7 @@ export default function TemplatesPage() {
                 <span className="font-medium">{Array.isArray(template.sections) ? template.sections.length : 0}</span> sections
               </div>
 
-              <div className="flex space-x-2">
+              <div className="flex space-x-2" onClick={(e) => e.stopPropagation()}>
                 <button
                   onClick={() => openEditModal(template)}
                   className="btn btn-outline text-sm flex-1"
@@ -254,7 +369,10 @@ export default function TemplatesPage() {
                 </button>
                 {!template.isSystem && (
                   <button
-                    onClick={() => handleDelete(template.id)}
+                    onClick={() => {
+                      setTemplateToDelete(template.id);
+                      setShowDeleteConfirm(true);
+                    }}
                     className="btn btn-danger text-sm"
                   >
                     Delete
@@ -266,7 +384,48 @@ export default function TemplatesPage() {
         )}
       </div>
 
-      {/* Modal */}
+      {/* Detail Modal */}
+      <DetailModal
+        isOpen={showDetailModal}
+        title="Template Details"
+        fields={selectedTemplate ? [
+          { label: 'Name', value: selectedTemplate.name },
+          { label: 'Note Type', value: <span className="badge badge-blue">{getNoteTypeLabel(selectedTemplate.noteType)}</span> },
+          { label: 'Description', value: selectedTemplate.description || 'No description' },
+          { label: 'Specialty', value: selectedTemplate.specialty || 'General' },
+          { label: 'System Template', value: selectedTemplate.isSystem ? 'Yes' : 'No' },
+          { label: 'Sections', value: `${Array.isArray(selectedTemplate.sections) ? selectedTemplate.sections.length : 0} sections` },
+          { label: 'Section Names', value: Array.isArray(selectedTemplate.sections) ? selectedTemplate.sections.map((s: any) => s.name).join(', ') : 'None' },
+          { label: 'Template ID', value: selectedTemplate.id },
+        ] : []}
+        onClose={() => setShowDetailModal(false)}
+        onEdit={handleEditFromModal}
+        onDelete={!selectedTemplate?.isSystem ? handleDeleteFromModal : undefined}
+      />
+
+      {/* Single Delete Confirm */}
+      <ConfirmDialog
+        isOpen={showDeleteConfirm}
+        title="Delete Template"
+        message="Are you sure you want to delete this template? This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={handleConfirmDelete}
+        onCancel={() => { setShowDeleteConfirm(false); setTemplateToDelete(null); }}
+      />
+
+      {/* Bulk Delete Confirm */}
+      <ConfirmDialog
+        isOpen={showBulkDeleteConfirm}
+        title="Delete Selected Templates"
+        message={`Are you sure you want to delete ${selectedIds.size} selected templates? System templates will be skipped.`}
+        confirmLabel={`Delete ${selectedIds.size} Templates`}
+        variant="danger"
+        onConfirm={handleBulkDelete}
+        onCancel={() => setShowBulkDeleteConfirm(false)}
+      />
+
+      {/* Create/Edit Modal */}
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 overflow-y-auto">
           <div className="bg-white rounded-lg shadow-xl p-6 max-w-2xl w-full mx-4 my-8 max-h-[90vh] overflow-y-auto">

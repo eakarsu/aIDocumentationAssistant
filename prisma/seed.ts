@@ -1695,6 +1695,301 @@ A: The web app is mobile-responsive.`,
   }
   console.log(`Created ${sampleDocs.length} sample documents with versions, search index, and tags`);
 
+  // ==================== PASSWORD RESET TOKENS (15 items) ====================
+  console.log('Creating password reset tokens...');
+  const passwordResetTokens = [];
+  for (let i = 0; i < 15; i++) {
+    const targetUser = createdUsers[i % createdUsers.length];
+    const daysAgo = i * 2;
+    const token = await prisma.passwordResetToken.create({
+      data: {
+        userId: targetUser.id,
+        token: `reset-token-${i + 1}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        expiresAt: new Date(Date.now() - (daysAgo > 5 ? 1 : -1) * 60 * 60 * 1000), // Some expired, some valid
+        used: i < 8, // First 8 are used
+        createdAt: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000),
+      },
+    });
+    passwordResetTokens.push(token);
+  }
+  console.log(`Created ${passwordResetTokens.length} password reset tokens`);
+
+  // ==================== EMAIL VERIFICATIONS (15 items) ====================
+  console.log('Creating email verifications...');
+  const emailVerifications = [];
+  for (let i = 0; i < 15; i++) {
+    const targetUser = createdUsers[i % createdUsers.length];
+    const verification = await prisma.emailVerification.create({
+      data: {
+        userId: targetUser.id,
+        token: `verify-token-${i + 1}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        verified: i < 12, // Most are verified
+        createdAt: new Date(Date.now() - i * 24 * 60 * 60 * 1000),
+      },
+    });
+    emailVerifications.push(verification);
+  }
+  // Mark users with verified emails
+  for (let i = 0; i < 12; i++) {
+    const targetUser = createdUsers[i % createdUsers.length];
+    await prisma.user.update({
+      where: { id: targetUser.id },
+      data: { emailVerified: true },
+    });
+  }
+  console.log(`Created ${emailVerifications.length} email verifications`);
+
+  // ==================== RATE LIMIT ENTRIES (15 items) ====================
+  console.log('Creating rate limit entries...');
+  const rateLimitEntries = [];
+  const ipAddresses = [
+    '192.168.1.10', '192.168.1.11', '192.168.1.12', '10.0.0.1', '10.0.0.2',
+    '172.16.0.1', '172.16.0.2', '172.16.0.3', '192.168.2.1', '192.168.2.2',
+    '10.1.1.1', '10.1.1.2', '192.168.3.1', '192.168.3.2', '172.17.0.1',
+  ];
+  const apiEndpoints = [
+    '/api/auth/login', '/api/notes', '/api/recordings', '/api/docs', '/api/users',
+    '/api/auth/register', '/api/export/csv', '/api/bulk/delete', '/api/templates', '/api/settings',
+    '/api/audit-logs', '/api/integrations', '/api/codes', '/api/docs/search', '/api/auth/forgot-password',
+  ];
+  for (let i = 0; i < 15; i++) {
+    const entry = await prisma.rateLimitEntry.create({
+      data: {
+        key: `${ipAddresses[i]}:${apiEndpoints[i]}`,
+        count: Math.floor(Math.random() * 50) + 1,
+        windowStart: new Date(Date.now() - Math.floor(Math.random() * 60000)),
+        expiresAt: new Date(Date.now() + 60000),
+      },
+    });
+    rateLimitEntries.push(entry);
+  }
+  console.log(`Created ${rateLimitEntries.length} rate limit entries`);
+
+  // ==================== ADDITIONAL AUDIT LOGS for new features (15+ more) ====================
+  console.log('Creating additional audit logs for new features...');
+  const newFeatureAuditLogs = [
+    { action: AuditAction.CREATE, entityType: 'User', description: 'User registration' },
+    { action: AuditAction.UPDATE, entityType: 'User', description: 'Password reset' },
+    { action: AuditAction.UPDATE, entityType: 'User', description: 'Email verification' },
+    { action: AuditAction.EXPORT, entityType: 'Note', description: 'CSV export - notes' },
+    { action: AuditAction.EXPORT, entityType: 'User', description: 'CSV export - users' },
+    { action: AuditAction.EXPORT, entityType: 'AuditLog', description: 'CSV export - audit logs' },
+    { action: AuditAction.EXPORT, entityType: 'Recording', description: 'CSV export - recordings' },
+    { action: AuditAction.EXPORT, entityType: 'Doc', description: 'CSV export - docs' },
+    { action: AuditAction.DELETE, entityType: 'Note', description: 'Bulk delete notes' },
+    { action: AuditAction.DELETE, entityType: 'Recording', description: 'Bulk delete recordings' },
+    { action: AuditAction.UPDATE, entityType: 'Note', description: 'Bulk update note status' },
+    { action: AuditAction.UPDATE, entityType: 'Doc', description: 'Bulk update doc visibility' },
+    { action: AuditAction.UPDATE, entityType: 'User', description: 'Bulk update user roles' },
+    { action: AuditAction.LOGIN, entityType: 'User', description: 'Rate limited login attempt' },
+    { action: AuditAction.ACCESS_DENIED, entityType: 'API', description: 'Rate limit exceeded' },
+    { action: AuditAction.CREATE, entityType: 'User', description: 'New user registered via form' },
+    { action: AuditAction.UPDATE, entityType: 'User', description: 'Password changed via reset' },
+    { action: AuditAction.READ, entityType: 'Note', description: 'Note detail viewed' },
+    { action: AuditAction.DELETE, entityType: 'Doc', description: 'Document deleted from modal' },
+    { action: AuditAction.UPDATE, entityType: 'Note', description: 'Note edited from detail view' },
+  ];
+  for (let i = 0; i < newFeatureAuditLogs.length; i++) {
+    const log = newFeatureAuditLogs[i];
+    await prisma.auditLog.create({
+      data: {
+        userId: createdUsers[i % createdUsers.length].id,
+        action: log.action,
+        entityType: log.entityType,
+        entityId: `feature-${i + 1}`,
+        ipAddress: ipAddresses[i % ipAddresses.length],
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        newValues: { description: log.description },
+      },
+    });
+  }
+  console.log(`Created ${newFeatureAuditLogs.length} additional audit logs for new features`);
+
+  // ==================== ADDITIONAL SYSTEM SETTINGS for new features (15 items) ====================
+  console.log('Creating additional system settings for new features...');
+  const newFeatureSettings = [
+    { key: 'registration_enabled', value: 'true', description: 'Allow new user registration' },
+    { key: 'email_verification_required', value: 'true', description: 'Require email verification for new users' },
+    { key: 'password_reset_expiry_minutes', value: '60', description: 'Password reset token expiry in minutes' },
+    { key: 'csv_export_max_rows', value: '10000', description: 'Maximum rows in CSV export' },
+    { key: 'bulk_operation_max_items', value: '100', description: 'Maximum items in bulk operations' },
+    { key: 'rate_limit_window_ms', value: '60000', description: 'Rate limit window in milliseconds' },
+    { key: 'rate_limit_max_requests', value: '60', description: 'Maximum requests per rate limit window' },
+    { key: 'auth_rate_limit_max', value: '10', description: 'Max auth attempts per 15 minutes' },
+    { key: 'toast_default_duration', value: '4000', description: 'Default toast notification duration in ms' },
+    { key: 'confirm_dialog_enabled', value: 'true', description: 'Show confirmation dialogs for destructive actions' },
+    { key: 'skeleton_loading_enabled', value: 'true', description: 'Show skeleton loaders during page load' },
+    { key: 'form_validation_realtime', value: 'true', description: 'Enable real-time form validation' },
+    { key: 'security_headers_enabled', value: 'true', description: 'Enable helmet security headers' },
+    { key: 'input_sanitization_enabled', value: 'true', description: 'Enable input sanitization middleware' },
+    { key: 'error_boundary_enabled', value: 'true', description: 'Enable React error boundaries' },
+  ];
+  for (const setting of newFeatureSettings) {
+    await prisma.systemSetting.upsert({
+      where: { key: setting.key },
+      update: {},
+      create: setting,
+    });
+  }
+  console.log(`Created ${newFeatureSettings.length} new feature settings`);
+
+  // ==================== ADDITIONAL CO-SIGNATURES (15 items) ====================
+  console.log('Creating co-signature records...');
+  const allNotes = await prisma.note.findMany({ take: 15 });
+  for (let i = 0; i < Math.min(15, allNotes.length); i++) {
+    const requester = createdUsers[i % createdUsers.length];
+    const signer = providers[(i + 1) % providers.length];
+    if (requester.id !== signer.id) {
+      try {
+        await prisma.coSignature.create({
+          data: {
+            noteId: allNotes[i].id,
+            requesterId: requester.id,
+            signerId: signer.id,
+            status: i < 8 ? 'SIGNED' : i < 12 ? 'PENDING' : 'REJECTED',
+            comments: i < 8 ? 'Reviewed and approved' : i < 12 ? null : 'Needs corrections',
+            signedAt: i < 8 ? new Date() : null,
+          },
+        });
+      } catch (e) {
+        // Skip if duplicate
+      }
+    }
+  }
+  console.log('Created co-signature records');
+
+  // ==================== ADDITIONAL AMENDMENTS (15 items) ====================
+  console.log('Creating amendment records...');
+  for (let i = 0; i < Math.min(15, allNotes.length); i++) {
+    const author = createdUsers[i % createdUsers.length];
+    await prisma.amendment.create({
+      data: {
+        noteId: allNotes[i].id,
+        userId: author.id,
+        reason: [
+          'Correcting vital signs documentation',
+          'Adding missed medication information',
+          'Updating diagnosis based on lab results',
+          'Correcting patient history details',
+          'Adding procedure details',
+          'Updating treatment plan',
+          'Correcting allergies information',
+          'Adding follow-up instructions',
+          'Updating discharge summary',
+          'Correcting medication dosage',
+          'Adding missed physical exam findings',
+          'Updating imaging results',
+          'Correcting referral information',
+          'Adding patient education notes',
+          'Updating insurance coding',
+        ][i],
+        oldContent: { text: `Original content version ${i + 1}` },
+        newContent: { text: `Amended content version ${i + 1}` },
+        status: i < 10 ? 'APPROVED' : i < 13 ? 'PENDING' : 'REJECTED',
+        approvedBy: i < 10 ? providers[0].id : null,
+        approvedAt: i < 10 ? new Date() : null,
+      },
+    });
+  }
+  console.log('Created 15 amendment records');
+
+  // ==================== ADDITIONAL ACCESS CONTROLS (15 items) ====================
+  console.log('Creating access control records...');
+  const resources = [
+    'notes:read', 'notes:write', 'notes:delete', 'notes:sign',
+    'recordings:read', 'recordings:write', 'recordings:delete',
+    'docs:read', 'docs:write', 'docs:delete',
+    'users:read', 'users:write', 'users:delete',
+    'settings:read', 'settings:write',
+  ];
+  const permissions = ['READ', 'WRITE', 'DELETE', 'SIGN', 'COSIGN', 'ADMIN'] as const;
+  for (let i = 0; i < 15; i++) {
+    const targetUser = createdUsers[i % createdUsers.length];
+    try {
+      await prisma.accessControl.create({
+        data: {
+          userId: targetUser.id,
+          resource: resources[i],
+          permission: permissions[i % permissions.length],
+          grantedBy: createdUsers[0].id,
+        },
+      });
+    } catch (e) {
+      // Skip duplicates
+    }
+  }
+  console.log('Created 15 access control records');
+
+  // ==================== ADDITIONAL NOTE VERSIONS (15 items) ====================
+  console.log('Creating additional note versions...');
+  for (let i = 0; i < Math.min(15, allNotes.length); i++) {
+    const note = allNotes[i];
+    const existingVersions = await prisma.noteVersion.count({ where: { noteId: note.id } });
+    await prisma.noteVersion.create({
+      data: {
+        noteId: note.id,
+        version: existingVersions + 1,
+        content: { text: `Updated content v${existingVersions + 1} - Review ${i + 1}` },
+        changedBy: createdUsers[i % createdUsers.length].id,
+        changeLog: [
+          'Updated subjective section',
+          'Added medication changes',
+          'Updated vital signs',
+          'Revised assessment',
+          'Modified treatment plan',
+          'Added lab results',
+          'Updated imaging findings',
+          'Corrected patient demographics',
+          'Added specialist recommendations',
+          'Updated follow-up plan',
+          'Revised differential diagnosis',
+          'Added procedure notes',
+          'Updated family history',
+          'Added social history details',
+          'Revised physical exam findings',
+        ][i],
+      },
+    });
+  }
+  console.log('Created 15 additional note versions');
+
+  // ==================== ADDITIONAL MEDICAL CODES on notes (15 items) ====================
+  console.log('Creating medical code assignments...');
+  for (let i = 0; i < Math.min(15, allNotes.length); i++) {
+    const note = allNotes[i];
+    await prisma.medicalCode.create({
+      data: {
+        noteId: note.id,
+        codeType: i % 2 === 0 ? 'CPT' : 'ICD10',
+        code: i % 2 === 0 ? cptCodes[i % cptCodes.length].code : icd10Codes[i % icd10Codes.length].code,
+        description: i % 2 === 0 ? cptCodes[i % cptCodes.length].description : icd10Codes[i % icd10Codes.length].description,
+        confidence: 0.75 + Math.random() * 0.25,
+        isVerified: i < 10,
+        verifiedBy: i < 10 ? providers[i % providers.length].id : null,
+      },
+    });
+  }
+  console.log('Created 15 medical code assignments');
+
+  // ==================== INTEGRATION SYNC LOGS (15 items) ====================
+  console.log('Creating integration sync logs...');
+  const allIntegrations = await prisma.integration.findMany({ take: 5 });
+  for (let i = 0; i < 15; i++) {
+    const integration = allIntegrations[i % allIntegrations.length];
+    await prisma.integrationSyncLog.create({
+      data: {
+        integrationId: integration.id,
+        status: i < 10 ? 'COMPLETED' : i < 13 ? 'FAILED' : 'PARTIAL',
+        recordsSync: Math.floor(Math.random() * 500) + 10,
+        errors: i >= 10 ? { message: `Sync error for batch ${i + 1}`, code: 'TIMEOUT' } : undefined,
+        startedAt: new Date(Date.now() - i * 4 * 60 * 60 * 1000),
+        completedAt: new Date(Date.now() - i * 4 * 60 * 60 * 1000 + 120000),
+      },
+    });
+  }
+  console.log('Created 15 integration sync logs');
+
   console.log('');
   console.log('========================================');
   console.log('Database seeding completed successfully!');
@@ -1709,12 +2004,21 @@ A: The web app is mobile-responsive.`,
   console.log('  - 20 Sample Notes');
   console.log('  - 20 Recordings');
   console.log('  - 20 Comments');
-  console.log('  - 25 Audit Logs');
+  console.log('  - 45 Audit Logs (25 + 20 new feature logs)');
   console.log(`  - ${retentionPolicies.length} Retention Policies`);
-  console.log(`  - ${settings.length} System Settings`);
+  console.log(`  - ${settings.length + newFeatureSettings.length} System Settings`);
   console.log(`  - ${docCategories.length} Doc Categories`);
   console.log(`  - ${docTags.length} Doc Tags`);
   console.log(`  - ${sampleDocs.length} Sample Documents`);
+  console.log('  - 15 Password Reset Tokens');
+  console.log('  - 15 Email Verifications');
+  console.log('  - 15 Rate Limit Entries');
+  console.log('  - 15 Co-Signatures');
+  console.log('  - 15 Amendments');
+  console.log('  - 15 Access Controls');
+  console.log('  - 15 Note Versions (additional)');
+  console.log('  - 15 Medical Code Assignments');
+  console.log('  - 15 Integration Sync Logs');
 }
 
 main()

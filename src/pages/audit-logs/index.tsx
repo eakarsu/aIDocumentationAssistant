@@ -2,6 +2,9 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '@/components/Layout';
 import { useAuth } from '@/contexts/AuthContext';
+import { useToast } from '@/components/ToastContext';
+import DetailModal from '@/components/DetailModal';
+import { TableSkeleton } from '@/components/SkeletonLoader';
 import api from '@/lib/api';
 
 interface EnumOption {
@@ -12,6 +15,7 @@ interface EnumOption {
 export default function AuditLogsPage() {
   const { isAuthenticated, isLoading, user } = useAuth();
   const router = useRouter();
+  const { showToast } = useToast();
   const [logs, setLogs] = useState<any[]>([]);
   const [auditActions, setAuditActions] = useState<EnumOption[]>([]);
   const [entityTypes, setEntityTypes] = useState<EnumOption[]>([]);
@@ -28,6 +32,10 @@ export default function AuditLogsPage() {
     total: 0,
     totalPages: 0,
   });
+
+  // Detail modal
+  const [selectedLog, setSelectedLog] = useState<any>(null);
+  const [showDetailModal, setShowDetailModal] = useState(false);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -82,6 +90,7 @@ export default function AuditLogsPage() {
       setPagination(prev => ({ ...prev, ...data.pagination }));
     } catch (error) {
       console.error('Failed to load audit logs:', error);
+      showToast('Failed to load audit logs', 'error');
     } finally {
       setLoading(false);
     }
@@ -110,6 +119,63 @@ export default function AuditLogsPage() {
     }
   };
 
+  const handleRowClick = (log: any) => {
+    setSelectedLog(log);
+    setShowDetailModal(true);
+  };
+
+  const handleExportCsv = async () => {
+    try {
+      const params: Record<string, string> = { type: 'audit-logs' };
+      if (filters.action) params.action = filters.action;
+      if (filters.entityType) params.entityType = filters.entityType;
+      if (filters.startDate) params.startDate = filters.startDate;
+      if (filters.endDate) params.endDate = filters.endDate;
+
+      const queryString = new URLSearchParams(params).toString();
+      const response = await fetch(`/api/export/csv?${queryString}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
+
+      if (!response.ok) throw new Error('Export failed');
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `audit-logs-${new Date().toISOString().split('T')[0]}.csv`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      showToast('Audit logs exported successfully', 'success');
+    } catch (error) {
+      showToast('Failed to export audit logs', 'error');
+    }
+  };
+
+  const getDetailFields = (log: any) => {
+    const fields: { label: string; value: string }[] = [
+      { label: 'Timestamp', value: new Date(log.timestamp).toLocaleString() },
+      { label: 'User', value: log.user ? `${log.user.firstName} ${log.user.lastName}` : 'System' },
+      { label: 'Email', value: log.user?.email || 'N/A' },
+      { label: 'Action', value: getActionLabel(log.action) },
+      { label: 'Entity Type', value: getEntityTypeLabel(log.entityType) },
+      { label: 'Entity ID', value: log.entityId || 'N/A' },
+      { label: 'IP Address', value: log.ipAddress || 'N/A' },
+      { label: 'User Agent', value: log.userAgent || 'N/A' },
+    ];
+
+    if (log.oldValues) {
+      fields.push({ label: 'Old Values', value: JSON.stringify(log.oldValues, null, 2) });
+    }
+    if (log.newValues) {
+      fields.push({ label: 'New Values', value: JSON.stringify(log.newValues, null, 2) });
+    }
+
+    fields.push({ label: 'Log ID', value: log.id });
+
+    return fields;
+  };
+
   if (isLoading || !isAuthenticated || !['ADMIN', 'AUDITOR'].includes(user?.role || '')) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -120,9 +186,17 @@ export default function AuditLogsPage() {
 
   return (
     <Layout>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Audit Logs</h1>
-        <p className="text-gray-600">Track all system access and modifications for HIPAA compliance</p>
+      <div className="mb-6 flex justify-between items-start">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Audit Logs</h1>
+          <p className="text-gray-600">Track all system access and modifications for HIPAA compliance</p>
+        </div>
+        <button onClick={handleExportCsv} className="btn btn-secondary flex items-center">
+          <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          Export CSV
+        </button>
       </div>
 
       {/* Filters */}
@@ -186,9 +260,7 @@ export default function AuditLogsPage() {
       {/* Logs Table */}
       <div className="card">
         {loading ? (
-          <div className="flex justify-center py-8">
-            <div className="spinner"></div>
-          </div>
+          <TableSkeleton rows={10} cols={6} />
         ) : logs.length === 0 ? (
           <div className="text-center py-8 text-gray-500">No audit logs found.</div>
         ) : (
@@ -207,7 +279,11 @@ export default function AuditLogsPage() {
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
                   {logs.map((log) => (
-                    <tr key={log.id}>
+                    <tr
+                      key={log.id}
+                      onClick={() => handleRowClick(log)}
+                      className="cursor-pointer hover:bg-blue-50 transition-colors"
+                    >
                       <td className="text-gray-500 text-sm">
                         {new Date(log.timestamp).toLocaleString()}
                       </td>
@@ -234,15 +310,7 @@ export default function AuditLogsPage() {
                       </td>
                       <td className="max-w-xs">
                         {log.oldValues || log.newValues ? (
-                          <button
-                            onClick={() => {
-                              const details = `Old Values:\n${JSON.stringify(log.oldValues, null, 2)}\n\nNew Values:\n${JSON.stringify(log.newValues, null, 2)}`;
-                              alert(details);
-                            }}
-                            className="text-blue-600 hover:text-blue-700 text-sm"
-                          >
-                            View Details
-                          </button>
+                          <span className="text-blue-600 text-sm">View Details</span>
                         ) : (
                           <span className="text-gray-400">-</span>
                         )}
@@ -298,6 +366,18 @@ export default function AuditLogsPage() {
           and include user identification, timestamps, and details of all actions performed.
         </p>
       </div>
+
+      {/* Detail Modal - read-only for audit logs */}
+      {showDetailModal && selectedLog && (
+        <DetailModal
+          title={`Audit Log: ${getActionLabel(selectedLog.action)} ${getEntityTypeLabel(selectedLog.entityType)}`}
+          fields={getDetailFields(selectedLog)}
+          onClose={() => {
+            setShowDetailModal(false);
+            setSelectedLog(null);
+          }}
+        />
+      )}
     </Layout>
   );
 }

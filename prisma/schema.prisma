@@ -46,6 +46,11 @@ model User {
   docExports        DocExport[]
   repositories      Repository[]
 
+  // Auth features
+  passwordResetTokens PasswordResetToken[]
+  emailVerifications  EmailVerification[]
+  emailVerified       Boolean   @default(false)
+
   @@index([email])
 }
 
@@ -62,6 +67,46 @@ model Session {
 
   @@index([token])
   @@index([userId])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+}
+
+model EmailVerification {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  verified  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+}
+
+model RateLimitEntry {
+  id        String   @id @default(uuid())
+  key       String
+  count     Int      @default(1)
+  windowStart DateTime @default(now())
+  expiresAt DateTime
+
+  @@unique([key])
+  @@index([key])
+  @@index([expiresAt])
 }
 
 enum UserRole {

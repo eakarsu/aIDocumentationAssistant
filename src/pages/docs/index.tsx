@@ -3,10 +3,15 @@ import { useRouter } from 'next/router';
 import Layout from '@/components/Layout';
 import DocsDashboard from '@/components/docs/DocsDashboard';
 import DocCard from '@/components/docs/DocCard';
+import { useToast } from '@/components/ToastContext';
+import DetailModal from '@/components/DetailModal';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { CardSkeleton } from '@/components/SkeletonLoader';
 import { api } from '@/lib/api';
 
 export default function DocsPage() {
   const router = useRouter();
+  const { showToast } = useToast();
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'dashboard' | 'list'>('dashboard');
   const [docs, setDocs] = useState<any[]>([]);
@@ -28,6 +33,18 @@ export default function DocsPage() {
     category: '',
     search: '',
   });
+
+  // Bulk selection
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  // Detail modal
+  const [selectedDoc, setSelectedDoc] = useState<any>(null);
+  const [showDetailModal, setShowDetailModal] = useState(false);
+
+  // Confirm dialog
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<'delete' | 'bulkDelete'>('delete');
+  const [deleteTargetId, setDeleteTargetId] = useState<string>('');
 
   useEffect(() => {
     loadData();
@@ -71,24 +88,123 @@ export default function DocsPage() {
         totalDocs: allDocs.pagination.total,
         publishedDocs: allDocs.docs.filter((d: any) => d.status === 'PUBLISHED').length,
         draftDocs: allDocs.docs.filter((d: any) => d.status === 'DRAFT').length,
-        recentViews: 0, // Would need analytics
+        recentViews: 0,
       });
     } catch (error) {
       console.error('Failed to load docs:', error);
+      showToast('Failed to load documents', 'error');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this document?')) return;
+  // Bulk selection
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev =>
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
 
+  const toggleSelectAll = () => {
+    if (selectedIds.length === docs.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(docs.map(d => d.id));
+    }
+  };
+
+  // Delete handlers
+  const handleDelete = (id: string) => {
+    setDeleteTargetId(id);
+    setConfirmAction('delete');
+    setShowConfirm(true);
+  };
+
+  const handleBulkDelete = () => {
+    if (selectedIds.length === 0) return;
+    setConfirmAction('bulkDelete');
+    setShowConfirm(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    setShowConfirm(false);
     try {
-      await api.deleteDoc(id);
+      if (confirmAction === 'delete') {
+        await api.deleteDoc(deleteTargetId);
+        showToast('Document deleted successfully', 'success');
+      } else if (confirmAction === 'bulkDelete') {
+        const token = localStorage.getItem('token');
+        const response = await fetch('/api/bulk/delete', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ type: 'docs', ids: selectedIds }),
+        });
+        if (!response.ok) {
+          const err = await response.json();
+          throw new Error(err.error || 'Bulk delete failed');
+        }
+        showToast(`${selectedIds.length} document(s) deleted`, 'success');
+        setSelectedIds([]);
+      }
+
+      if (showDetailModal) {
+        setShowDetailModal(false);
+        setSelectedDoc(null);
+      }
       loadData();
+    } catch (error: any) {
+      showToast(error.message || 'Failed to delete', 'error');
+    }
+  };
+
+  // Row/card click
+  const handleDocClick = (doc: any) => {
+    setSelectedDoc(doc);
+    setShowDetailModal(true);
+  };
+
+  const handleEditFromModal = () => {
+    if (selectedDoc) {
+      router.push(`/docs/${selectedDoc.id}/edit`);
+    }
+  };
+
+  const handleDeleteFromModal = () => {
+    if (selectedDoc) {
+      setDeleteTargetId(selectedDoc.id);
+      setConfirmAction('delete');
+      setShowConfirm(true);
+    }
+  };
+
+  // CSV Export
+  const handleExportCsv = async () => {
+    try {
+      const params: Record<string, string> = { type: 'docs' };
+      if (filters.status) params.status = filters.status;
+      if (filters.category) params.categoryId = filters.category;
+      if (filters.search) params.search = filters.search;
+
+      const queryString = new URLSearchParams(params).toString();
+      const response = await fetch(`/api/export/csv?${queryString}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
+
+      if (!response.ok) throw new Error('Export failed');
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `docs-${new Date().toISOString().split('T')[0]}.csv`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      showToast('Documents exported successfully', 'success');
     } catch (error) {
-      console.error('Failed to delete doc:', error);
-      alert('Failed to delete document');
+      showToast('Failed to export documents', 'error');
     }
   };
 
@@ -101,11 +217,40 @@ export default function DocsPage() {
     router.push(`/docs?${params.toString()}`);
   };
 
-  if (loading) {
+  const getDetailFields = (doc: any) => {
+    const fields: { label: string; value: string }[] = [
+      { label: 'Title', value: doc.title },
+      { label: 'Slug', value: doc.slug || 'N/A' },
+      { label: 'Status', value: doc.status },
+      { label: 'Visibility', value: doc.visibility || 'N/A' },
+      { label: 'Author', value: doc.author ? `${doc.author.firstName} ${doc.author.lastName}` : 'N/A' },
+      { label: 'Category', value: doc.category?.name || 'Uncategorized' },
+      { label: 'Tags', value: doc.tags?.map((t: any) => t.tag?.name || t.name).join(', ') || 'None' },
+      { label: 'Reading Time', value: doc.readingTime ? `${doc.readingTime} min` : 'N/A' },
+      { label: 'Excerpt', value: doc.excerpt || 'No excerpt' },
+      { label: 'Comments', value: String(doc._count?.comments ?? 0) },
+      { label: 'Versions', value: String(doc._count?.versions ?? 0) },
+      { label: 'Published', value: doc.publishedAt ? new Date(doc.publishedAt).toLocaleString() : 'Not published' },
+      { label: 'Updated', value: new Date(doc.updatedAt).toLocaleString() },
+      { label: 'ID', value: doc.id },
+    ];
+    return fields;
+  };
+
+  if (loading && docs.length === 0) {
     return (
       <Layout>
-        <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        <div className="mb-6">
+          <h1 className="text-2xl font-bold text-gray-900">Documentation</h1>
+          <p className="text-gray-600 mt-1">Manage your documentation library</p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <CardSkeleton />
+          <CardSkeleton />
+          <CardSkeleton />
+          <CardSkeleton />
+          <CardSkeleton />
+          <CardSkeleton />
         </div>
       </Layout>
     );
@@ -120,6 +265,12 @@ export default function DocsPage() {
             <p className="text-gray-600 mt-1">Manage your documentation library</p>
           </div>
           <div className="flex items-center space-x-3">
+            <button onClick={handleExportCsv} className="btn btn-secondary flex items-center">
+              <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              Export CSV
+            </button>
             <div className="flex bg-gray-100 rounded-lg p-1">
               <button
                 onClick={() => setView('dashboard')}
@@ -150,6 +301,29 @@ export default function DocsPage() {
           </div>
         </div>
       </div>
+
+      {/* Bulk Actions Bar */}
+      {selectedIds.length > 0 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 flex items-center justify-between">
+          <span className="text-blue-800 font-medium">
+            {selectedIds.length} document(s) selected
+          </span>
+          <div className="flex space-x-2">
+            <button
+              onClick={handleBulkDelete}
+              className="btn btn-danger text-sm"
+            >
+              Delete Selected
+            </button>
+            <button
+              onClick={() => setSelectedIds([])}
+              className="btn btn-secondary text-sm"
+            >
+              Clear Selection
+            </button>
+          </div>
+        </div>
+      )}
 
       {view === 'dashboard' ? (
         <DocsDashboard
@@ -213,6 +387,21 @@ export default function DocsPage() {
             </form>
           </div>
 
+          {/* Select All */}
+          {docs.length > 0 && (
+            <div className="flex items-center px-1">
+              <label className="flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.length === docs.length && docs.length > 0}
+                  onChange={toggleSelectAll}
+                  className="rounded border-gray-300 text-blue-600 mr-2"
+                />
+                <span className="text-sm text-gray-600">Select All</span>
+              </label>
+            </div>
+          )}
+
           {/* Document Grid */}
           {docs.length === 0 ? (
             <div className="bg-white rounded-lg shadow p-12 text-center">
@@ -236,7 +425,27 @@ export default function DocsPage() {
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {docs.map((doc) => (
-                  <DocCard key={doc.id} doc={doc} onDelete={handleDelete} />
+                  <div key={doc.id} className="relative">
+                    {/* Checkbox */}
+                    <div className="absolute top-3 left-3 z-10">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.includes(doc.id)}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          toggleSelect(doc.id);
+                        }}
+                        className="rounded border-gray-300 text-blue-600"
+                      />
+                    </div>
+                    {/* Clickable overlay */}
+                    <div
+                      onClick={() => handleDocClick(doc)}
+                      className="cursor-pointer"
+                    >
+                      <DocCard doc={doc} onDelete={handleDelete} />
+                    </div>
+                  </div>
                 ))}
               </div>
 
@@ -265,6 +474,38 @@ export default function DocsPage() {
             </>
           )}
         </div>
+      )}
+
+      {/* Detail Modal */}
+      {showDetailModal && selectedDoc && (
+        <DetailModal
+          title={`Document: ${selectedDoc.title}`}
+          fields={getDetailFields(selectedDoc)}
+          onClose={() => {
+            setShowDetailModal(false);
+            setSelectedDoc(null);
+          }}
+          onEdit={handleEditFromModal}
+          onDelete={handleDeleteFromModal}
+        />
+      )}
+
+      {/* Confirm Dialog */}
+      {showConfirm && (
+        <ConfirmDialog
+          title={confirmAction === 'bulkDelete'
+            ? `Delete ${selectedIds.length} Document(s)?`
+            : 'Delete Document?'
+          }
+          message={confirmAction === 'bulkDelete'
+            ? `Are you sure you want to delete ${selectedIds.length} selected document(s)? This action cannot be undone.`
+            : 'Are you sure you want to delete this document? This action cannot be undone.'
+          }
+          variant="danger"
+          confirmLabel="Delete"
+          onConfirm={handleConfirmDelete}
+          onCancel={() => setShowConfirm(false)}
+        />
       )}
     </Layout>
   );

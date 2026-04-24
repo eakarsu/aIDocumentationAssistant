@@ -1,6 +1,7 @@
 import { useState, FormEvent } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/router';
+import Link from 'next/link';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -87,6 +88,12 @@ export default function Login() {
             </div>
           </div>
 
+          <div className="flex justify-end">
+            <Link href="/forgot-password" className="text-sm text-blue-600 hover:text-blue-700">
+              Forgot your password?
+            </Link>
+          </div>
+
           <button
             type="submit"
             disabled={isLoading}
@@ -98,6 +105,13 @@ export default function Login() {
               'Sign in'
             )}
           </button>
+
+          <p className="text-center text-sm text-gray-600">
+            Don't have an account?{' '}
+            <Link href="/register" className="text-blue-600 hover:text-blue-700 font-medium">
+              Register
+            </Link>
+          </p>
 
           <div className="text-center text-sm text-gray-500">
             <p className="mb-2">Quick login:</p>

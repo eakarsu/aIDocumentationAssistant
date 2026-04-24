@@ -39,6 +39,51 @@ export const api = {
 
   getMe: () => fetchApi('/api/auth/me'),
 
+  register: (data: { email: string; password: string; firstName: string; lastName: string; role?: string; specialty?: string; phone?: string }) =>
+    fetchApi('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  forgotPassword: (email: string) =>
+    fetchApi('/api/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  resetPassword: (token: string, newPassword: string) =>
+    fetchApi('/api/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, newPassword }),
+    }),
+
+  verifyEmail: (token: string) =>
+    fetchApi('/api/auth/verify-email', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    }),
+
+  // CSV Export
+  exportCsv: (type: string) => {
+    const token = getToken();
+    return fetch(`/api/export/csv?type=${type}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+  },
+
+  // Bulk Operations
+  bulkDelete: (type: string, ids: string[]) =>
+    fetchApi('/api/bulk/delete', {
+      method: 'POST',
+      body: JSON.stringify({ type, ids }),
+    }),
+
+  bulkUpdate: (type: string, ids: string[], data: Record<string, any>) =>
+    fetchApi('/api/bulk/update', {
+      method: 'PUT',
+      body: JSON.stringify({ type, ids, data }),
+    }),
+
   // Users
   getUsers: (params?: Record<string, string>) =>
     fetchApi(`/api/users?${new URLSearchParams(params || {})}`),

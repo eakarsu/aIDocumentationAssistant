@@ -2,8 +2,12 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '@/components/Layout';
 import { useAuth } from '@/contexts/AuthContext';
+import { useToast } from '@/components/ToastContext';
 import api from '@/lib/api';
 import Link from 'next/link';
+import DetailModal from '@/components/DetailModal';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { TableSkeleton } from '@/components/SkeletonLoader';
 
 interface EnumOption {
   value: string;
@@ -13,6 +17,7 @@ interface EnumOption {
 export default function RecordingsPage() {
   const { isAuthenticated, isLoading } = useAuth();
   const router = useRouter();
+  const { addToast } = useToast();
   const [recordings, setRecordings] = useState<any[]>([]);
   const [recordingTypes, setRecordingTypes] = useState<EnumOption[]>([]);
   const [recordingStatuses, setRecordingStatuses] = useState<EnumOption[]>([]);
@@ -29,6 +34,18 @@ export default function RecordingsPage() {
     total: 0,
     totalPages: 0,
   });
+
+  // Row detail modal
+  const [selectedRecording, setSelectedRecording] = useState<any>(null);
+  const [showDetailModal, setShowDetailModal] = useState(false);
+
+  // Confirm dialog for delete
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [recordingToDelete, setRecordingToDelete] = useState<string | null>(null);
+
+  // Bulk selection
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -71,6 +88,7 @@ export default function RecordingsPage() {
       setPagination(prev => ({ ...prev, ...data.pagination }));
     } catch (error) {
       console.error('Failed to load recordings:', error);
+      addToast('Failed to load recordings', 'error');
     } finally {
       setLoading(false);
     }
@@ -111,9 +129,10 @@ export default function RecordingsPage() {
 
       mediaRecorder.start();
       setIsRecording(true);
+      addToast('Recording started', 'info');
     } catch (error) {
       console.error('Failed to start recording:', error);
-      alert('Failed to access media device. Please ensure you have granted permission.');
+      addToast('Failed to access media device. Please ensure you have granted permission.', 'error');
     }
   };
 
@@ -121,6 +140,7 @@ export default function RecordingsPage() {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
+      addToast('Recording stopped', 'info');
     }
   };
 
@@ -128,8 +148,7 @@ export default function RecordingsPage() {
     setUploading(true);
     try {
       const formData = new FormData();
-      const extension = recordingType === 'AUDIO' ? 'webm' : 'webm';
-      const fileName = `recording_${new Date().toISOString()}.${extension}`;
+      const fileName = `recording_${new Date().toISOString()}.webm`;
       formData.append('file', blob, fileName);
       formData.append('type', recordingType);
 
@@ -143,10 +162,11 @@ export default function RecordingsPage() {
 
       if (!response.ok) throw new Error('Upload failed');
 
+      addToast('Recording uploaded successfully', 'success');
       loadRecordings();
     } catch (error) {
       console.error('Upload failed:', error);
-      alert('Failed to upload recording');
+      addToast('Failed to upload recording', 'error');
     } finally {
       setUploading(false);
     }
@@ -155,10 +175,90 @@ export default function RecordingsPage() {
   const handleTranscribe = async (id: string) => {
     try {
       await api.transcribeRecording(id);
+      addToast('Transcription started. Refresh to see results.', 'info');
       loadRecordings();
-      alert('Transcription started. Refresh to see results.');
     } catch (error: any) {
-      alert(error.message || 'Failed to transcribe recording');
+      addToast(error.message || 'Failed to transcribe recording', 'error');
+    }
+  };
+
+  // Row click handler
+  const handleRowClick = (recording: any) => {
+    setSelectedRecording(recording);
+    setShowDetailModal(true);
+  };
+
+  // Delete from modal
+  const handleDeleteFromModal = () => {
+    if (selectedRecording) {
+      setRecordingToDelete(selectedRecording.id);
+      setShowDetailModal(false);
+      setShowDeleteConfirm(true);
+    }
+  };
+
+  // Confirm single delete
+  const handleConfirmDelete = async () => {
+    if (!recordingToDelete) return;
+    try {
+      await api.bulkDelete('recordings', [recordingToDelete]);
+      addToast('Recording deleted successfully', 'success');
+      setShowDeleteConfirm(false);
+      setRecordingToDelete(null);
+      loadRecordings();
+    } catch (error: any) {
+      addToast(error.message || 'Failed to delete recording', 'error');
+    }
+  };
+
+  // Bulk selection
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === recordings.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(recordings.map((r) => r.id)));
+    }
+  };
+
+  // Bulk delete
+  const handleBulkDelete = async () => {
+    try {
+      const result = await api.bulkDelete('recordings', Array.from(selectedIds));
+      addToast(`Deleted ${result.deletedCount} recordings`, 'success');
+      setSelectedIds(new Set());
+      setShowBulkDeleteConfirm(false);
+      loadRecordings();
+    } catch (error: any) {
+      addToast(error.message || 'Bulk delete failed', 'error');
+    }
+  };
+
+  // CSV Export
+  const handleExportCsv = async () => {
+    try {
+      const response = await api.exportCsv('recordings');
+      if (!response.ok) throw new Error('Export failed');
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'recordings_export.csv';
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      addToast('Recordings exported to CSV', 'success');
+    } catch (error: any) {
+      addToast('CSV export failed', 'error');
     }
   };
 
@@ -168,6 +268,15 @@ export default function RecordingsPage() {
 
   const getStatusLabel = (value: string) => {
     return recordingStatuses.find(s => s.value === value)?.label || value;
+  };
+
+  const formatDuration = (seconds: number | null) => {
+    if (!seconds) return '-';
+    return `${Math.floor(seconds / 60)}:${(seconds % 60).toString().padStart(2, '0')}`;
+  };
+
+  const formatFileSize = (bytes: number) => {
+    return (bytes / 1024 / 1024).toFixed(2) + ' MB';
   };
 
   if (isLoading || !isAuthenticated) {
@@ -185,6 +294,9 @@ export default function RecordingsPage() {
           <h1 className="text-2xl font-bold text-gray-900">Recordings</h1>
           <p className="text-gray-600">Audio, video, and screen recordings for documentation</p>
         </div>
+        <button onClick={handleExportCsv} className="btn btn-outline text-sm">
+          Export CSV
+        </button>
       </div>
 
       {/* Recording Controls */}
@@ -225,13 +337,36 @@ export default function RecordingsPage() {
         </div>
       </div>
 
+      {/* Bulk Actions Bar */}
+      {selectedIds.size > 0 && (
+        <div className="card mb-4 bg-blue-50 border border-blue-200">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-blue-800">
+              {selectedIds.size} recording{selectedIds.size > 1 ? 's' : ''} selected
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowBulkDeleteConfirm(true)}
+                className="px-3 py-1.5 text-xs font-medium bg-red-100 hover:bg-red-200 text-red-800 rounded-lg"
+              >
+                Delete Selected
+              </button>
+              <button
+                onClick={() => setSelectedIds(new Set())}
+                className="px-3 py-1.5 text-xs font-medium bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg"
+              >
+                Clear Selection
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Recordings List */}
       <div className="card">
         <h2 className="text-lg font-semibold mb-4">Your Recordings</h2>
         {loading ? (
-          <div className="flex justify-center py-8">
-            <div className="spinner"></div>
-          </div>
+          <TableSkeleton rows={8} columns={8} />
         ) : recordings.length === 0 ? (
           <div className="text-center py-8 text-gray-500">
             No recordings yet. Start a recording to get started.
@@ -242,6 +377,14 @@ export default function RecordingsPage() {
               <table className="table">
                 <thead>
                   <tr>
+                    <th className="w-10">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.size === recordings.length && recordings.length > 0}
+                        onChange={toggleSelectAll}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                    </th>
                     <th>File</th>
                     <th>Type</th>
                     <th>Status</th>
@@ -253,12 +396,22 @@ export default function RecordingsPage() {
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
                   {recordings.map((recording) => (
-                    <tr key={recording.id}>
+                    <tr
+                      key={recording.id}
+                      className="cursor-pointer hover:bg-blue-50 transition-colors"
+                      onClick={() => handleRowClick(recording)}
+                    >
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(recording.id)}
+                          onChange={() => toggleSelect(recording.id)}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                      </td>
                       <td>
                         <div className="font-medium text-gray-900">{recording.fileName}</div>
-                        <div className="text-gray-500 text-xs">
-                          {(recording.fileSize / 1024 / 1024).toFixed(2)} MB
-                        </div>
+                        <div className="text-gray-500 text-xs">{formatFileSize(recording.fileSize)}</div>
                       </td>
                       <td>
                         <span className={`badge ${
@@ -278,16 +431,13 @@ export default function RecordingsPage() {
                           {getStatusLabel(recording.status)}
                         </span>
                       </td>
-                      <td className="text-gray-500">
-                        {recording.duration
-                          ? `${Math.floor(recording.duration / 60)}:${(recording.duration % 60).toString().padStart(2, '0')}`
-                          : '-'}
-                      </td>
+                      <td className="text-gray-500">{formatDuration(recording.duration)}</td>
                       <td>
                         {recording.note ? (
                           <Link
                             href={`/notes/${recording.note.id}`}
                             className="text-blue-600 hover:text-blue-700"
+                            onClick={(e) => e.stopPropagation()}
                           >
                             {recording.note.patientName}
                           </Link>
@@ -298,7 +448,7 @@ export default function RecordingsPage() {
                       <td className="text-gray-500">
                         {new Date(recording.recordedAt).toLocaleString()}
                       </td>
-                      <td>
+                      <td onClick={(e) => e.stopPropagation()}>
                         <div className="flex space-x-2">
                           {recording.status === 'PROCESSING' && (
                             <button
@@ -308,14 +458,15 @@ export default function RecordingsPage() {
                               Transcribe
                             </button>
                           )}
-                          {recording.transcription && (
-                            <button
-                              onClick={() => alert(recording.transcription)}
-                              className="text-green-600 hover:text-green-700"
-                            >
-                              View Transcript
-                            </button>
-                          )}
+                          <button
+                            onClick={() => {
+                              setRecordingToDelete(recording.id);
+                              setShowDeleteConfirm(true);
+                            }}
+                            className="text-red-600 hover:text-red-700"
+                          >
+                            Delete
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -351,6 +502,48 @@ export default function RecordingsPage() {
           </>
         )}
       </div>
+
+      {/* Detail Modal */}
+      <DetailModal
+        isOpen={showDetailModal}
+        title="Recording Details"
+        fields={selectedRecording ? [
+          { label: 'File Name', value: selectedRecording.fileName },
+          { label: 'Type', value: <span className={`badge ${selectedRecording.type === 'AUDIO' ? 'badge-blue' : selectedRecording.type === 'VIDEO' ? 'badge-green' : 'badge-gray'}`}>{getTypeLabel(selectedRecording.type)}</span> },
+          { label: 'Status', value: <span className={`badge ${selectedRecording.status === 'COMPLETED' ? 'badge-green' : selectedRecording.status === 'FAILED' ? 'badge-red' : 'badge-yellow'}`}>{getStatusLabel(selectedRecording.status)}</span> },
+          { label: 'Duration', value: formatDuration(selectedRecording.duration) },
+          { label: 'File Size', value: formatFileSize(selectedRecording.fileSize) },
+          { label: 'MIME Type', value: selectedRecording.mimeType },
+          { label: 'Recorded At', value: new Date(selectedRecording.recordedAt).toLocaleString() },
+          { label: 'Linked Note', value: selectedRecording.note ? selectedRecording.note.patientName : 'Not linked' },
+          { label: 'Transcription', value: selectedRecording.transcription ? selectedRecording.transcription.substring(0, 200) + '...' : 'No transcription' },
+          { label: 'Recording ID', value: selectedRecording.id },
+        ] : []}
+        onClose={() => setShowDetailModal(false)}
+        onDelete={handleDeleteFromModal}
+      />
+
+      {/* Single Delete Confirm */}
+      <ConfirmDialog
+        isOpen={showDeleteConfirm}
+        title="Delete Recording"
+        message="Are you sure you want to delete this recording? This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={handleConfirmDelete}
+        onCancel={() => { setShowDeleteConfirm(false); setRecordingToDelete(null); }}
+      />
+
+      {/* Bulk Delete Confirm */}
+      <ConfirmDialog
+        isOpen={showBulkDeleteConfirm}
+        title="Delete Selected Recordings"
+        message={`Are you sure you want to delete ${selectedIds.size} selected recordings? This action cannot be undone.`}
+        confirmLabel={`Delete ${selectedIds.size} Recordings`}
+        variant="danger"
+        onConfirm={handleBulkDelete}
+        onCancel={() => setShowBulkDeleteConfirm(false)}
+      />
     </Layout>
   );
 }

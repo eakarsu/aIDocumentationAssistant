@@ -2,8 +2,12 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '@/components/Layout';
 import { useAuth } from '@/contexts/AuthContext';
+import { useToast } from '@/components/ToastContext';
 import api from '@/lib/api';
 import Link from 'next/link';
+import DetailModal from '@/components/DetailModal';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { DashboardSkeleton, CardSkeleton } from '@/components/SkeletonLoader';
 
 interface DashboardStats {
   totalNotes: number;
@@ -15,6 +19,7 @@ interface DashboardStats {
 export default function Dashboard() {
   const { isAuthenticated, isLoading, user } = useAuth();
   const router = useRouter();
+  const { addToast } = useToast();
   const [stats, setStats] = useState<DashboardStats>({
     totalNotes: 0,
     draftNotes: 0,
@@ -23,6 +28,18 @@ export default function Dashboard() {
   });
   const [recentNotes, setRecentNotes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Row detail modal
+  const [selectedNote, setSelectedNote] = useState<any>(null);
+  const [showDetailModal, setShowDetailModal] = useState(false);
+
+  // Confirm dialog for delete
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [noteToDelete, setNoteToDelete] = useState<string | null>(null);
+
+  // Bulk selection
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -39,7 +56,7 @@ export default function Dashboard() {
   const loadDashboardData = async () => {
     try {
       const [notesData, recordingsData] = await Promise.all([
-        api.getNotes({ limit: '5' }),
+        api.getNotes({ limit: '10' }),
         api.getRecordings({ limit: '5' }),
       ]);
 
@@ -52,8 +69,132 @@ export default function Dashboard() {
       });
     } catch (error) {
       console.error('Failed to load dashboard data:', error);
+      addToast('Failed to load dashboard data', 'error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Card click handlers - navigate to appropriate section
+  const handleCardClick = (section: string) => {
+    switch (section) {
+      case 'totalNotes':
+        router.push('/notes');
+        break;
+      case 'draftNotes':
+        router.push('/notes?status=DRAFT');
+        break;
+      case 'pendingCosign':
+        router.push('/notes?status=PENDING_COSIGN');
+        break;
+      case 'recordings':
+        router.push('/recordings');
+        break;
+    }
+  };
+
+  // Row click handler - show detail modal
+  const handleRowClick = (note: any) => {
+    setSelectedNote(note);
+    setShowDetailModal(true);
+  };
+
+  // Edit handler from detail modal
+  const handleEdit = () => {
+    if (selectedNote) {
+      setShowDetailModal(false);
+      router.push(`/notes/${selectedNote.id}/edit`);
+    }
+  };
+
+  // Delete handler from detail modal
+  const handleDeleteFromModal = () => {
+    if (selectedNote) {
+      setNoteToDelete(selectedNote.id);
+      setShowDetailModal(false);
+      setShowDeleteConfirm(true);
+    }
+  };
+
+  // Confirm single delete
+  const handleConfirmDelete = async () => {
+    if (!noteToDelete) return;
+    try {
+      await api.deleteNote(noteToDelete);
+      addToast('Note deleted successfully', 'success');
+      setShowDeleteConfirm(false);
+      setNoteToDelete(null);
+      loadDashboardData();
+    } catch (error: any) {
+      addToast(error.message || 'Failed to delete note', 'error');
+    }
+  };
+
+  // Bulk selection
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === recentNotes.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(recentNotes.map((n) => n.id)));
+    }
+  };
+
+  // Bulk delete
+  const handleBulkDelete = async () => {
+    try {
+      const result = await api.bulkDelete('notes', Array.from(selectedIds));
+      addToast(`Deleted ${result.deletedCount} notes`, 'success');
+      setSelectedIds(new Set());
+      setShowBulkDeleteConfirm(false);
+      loadDashboardData();
+    } catch (error: any) {
+      addToast(error.message || 'Bulk delete failed', 'error');
+    }
+  };
+
+  // Bulk status update
+  const handleBulkStatusUpdate = async (status: string) => {
+    try {
+      const result = await api.bulkUpdate('notes', Array.from(selectedIds), { status });
+      addToast(`Updated ${result.updatedCount} notes to ${status}`, 'success');
+      setSelectedIds(new Set());
+      loadDashboardData();
+    } catch (error: any) {
+      addToast(error.message || 'Bulk update failed', 'error');
+    }
+  };
+
+  // CSV Export
+  const handleExportCsv = async (type: string) => {
+    try {
+      const response = await api.exportCsv(type);
+      if (!response.ok) {
+        throw new Error('Export failed');
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${type}_export.csv`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      addToast(`${type} exported to CSV successfully`, 'success');
+    } catch (error: any) {
+      addToast(error.message || 'CSV export failed', 'error');
     }
   };
 
@@ -62,6 +203,14 @@ export default function Dashboard() {
       <div className="min-h-screen flex items-center justify-center">
         <div className="spinner"></div>
       </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <Layout>
+        <DashboardSkeleton />
+      </Layout>
     );
   }
 
@@ -76,9 +225,12 @@ export default function Dashboard() {
         </p>
       </div>
 
-      {/* Stats Grid */}
+      {/* Stats Grid - Clickable Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        <div className="card">
+        <div
+          className="card cursor-pointer hover:shadow-lg transition-shadow duration-200 hover:ring-2 hover:ring-blue-300"
+          onClick={() => handleCardClick('totalNotes')}
+        >
           <div className="flex items-center">
             <div className="p-3 rounded-full bg-blue-100">
               <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -92,7 +244,10 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="card">
+        <div
+          className="card cursor-pointer hover:shadow-lg transition-shadow duration-200 hover:ring-2 hover:ring-yellow-300"
+          onClick={() => handleCardClick('draftNotes')}
+        >
           <div className="flex items-center">
             <div className="p-3 rounded-full bg-yellow-100">
               <svg className="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -106,7 +261,10 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="card">
+        <div
+          className="card cursor-pointer hover:shadow-lg transition-shadow duration-200 hover:ring-2 hover:ring-orange-300"
+          onClick={() => handleCardClick('pendingCosign')}
+        >
           <div className="flex items-center">
             <div className="p-3 rounded-full bg-orange-100">
               <svg className="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -120,7 +278,10 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="card">
+        <div
+          className="card cursor-pointer hover:shadow-lg transition-shadow duration-200 hover:ring-2 hover:ring-green-300"
+          onClick={() => handleCardClick('recordings')}
+        >
           <div className="flex items-center">
             <div className="p-3 rounded-full bg-green-100">
               <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -135,7 +296,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Quick Actions */}
+      {/* Quick Actions + AI Features */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
         <div className="card">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h2>
@@ -152,6 +313,36 @@ export default function Dashboard() {
             <Link href="/notes" className="btn btn-outline text-center">
               All Notes
             </Link>
+          </div>
+
+          {/* CSV Export buttons */}
+          <h3 className="text-sm font-semibold text-gray-700 mt-6 mb-3">Export Data</h3>
+          <div className="flex flex-wrap gap-2">
+            {['notes', 'recordings', 'docs'].map((type) => (
+              <button
+                key={type}
+                onClick={() => handleExportCsv(type)}
+                className="px-3 py-1.5 text-xs font-medium bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors"
+              >
+                Export {type.charAt(0).toUpperCase() + type.slice(1)} CSV
+              </button>
+            ))}
+            {(user?.role === 'ADMIN' || user?.role === 'AUDITOR') && (
+              <button
+                onClick={() => handleExportCsv('audit-logs')}
+                className="px-3 py-1.5 text-xs font-medium bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors"
+              >
+                Export Audit Logs CSV
+              </button>
+            )}
+            {user?.role === 'ADMIN' && (
+              <button
+                onClick={() => handleExportCsv('users')}
+                className="px-3 py-1.5 text-xs font-medium bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors"
+              >
+                Export Users CSV
+              </button>
+            )}
           </div>
         </div>
 
@@ -197,20 +388,41 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Recent Notes */}
+      {/* Recent Notes with bulk operations */}
       <div className="card">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-gray-900">Recent Notes</h2>
-          <Link href="/notes" className="text-blue-600 hover:text-blue-700 text-sm">
-            View all
-          </Link>
+          <div className="flex items-center gap-2">
+            {selectedIds.size > 0 && (
+              <>
+                <span className="text-sm text-gray-500">{selectedIds.size} selected</span>
+                <button
+                  onClick={() => handleBulkStatusUpdate('DRAFT')}
+                  className="px-3 py-1.5 text-xs font-medium bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded-lg"
+                >
+                  Set Draft
+                </button>
+                <button
+                  onClick={() => handleBulkStatusUpdate('PENDING_REVIEW')}
+                  className="px-3 py-1.5 text-xs font-medium bg-blue-100 hover:bg-blue-200 text-blue-800 rounded-lg"
+                >
+                  Set Pending
+                </button>
+                <button
+                  onClick={() => setShowBulkDeleteConfirm(true)}
+                  className="px-3 py-1.5 text-xs font-medium bg-red-100 hover:bg-red-200 text-red-800 rounded-lg"
+                >
+                  Delete Selected
+                </button>
+              </>
+            )}
+            <Link href="/notes" className="text-blue-600 hover:text-blue-700 text-sm">
+              View all
+            </Link>
+          </div>
         </div>
 
-        {loading ? (
-          <div className="flex justify-center py-8">
-            <div className="spinner"></div>
-          </div>
-        ) : recentNotes.length === 0 ? (
+        {recentNotes.length === 0 ? (
           <div className="text-center py-8 text-gray-500">
             No notes yet. Create your first note to get started.
           </div>
@@ -219,6 +431,14 @@ export default function Dashboard() {
             <table className="table">
               <thead>
                 <tr>
+                  <th className="w-10">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.size === recentNotes.length && recentNotes.length > 0}
+                      onChange={toggleSelectAll}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                  </th>
                   <th>Patient</th>
                   <th>Type</th>
                   <th>Status</th>
@@ -228,7 +448,19 @@ export default function Dashboard() {
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {recentNotes.map((note) => (
-                  <tr key={note.id}>
+                  <tr
+                    key={note.id}
+                    className="cursor-pointer hover:bg-blue-50 transition-colors"
+                    onClick={() => handleRowClick(note)}
+                  >
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(note.id)}
+                        onChange={() => toggleSelect(note.id)}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                    </td>
                     <td>
                       <div className="font-medium text-gray-900">{note.patientName}</div>
                       <div className="text-gray-500 text-xs">{note.patientId}</div>
@@ -249,13 +481,21 @@ export default function Dashboard() {
                     <td className="text-gray-500">
                       {new Date(note.encounterDate).toLocaleDateString()}
                     </td>
-                    <td>
-                      <Link
-                        href={`/notes/${note.id}`}
-                        className="text-blue-600 hover:text-blue-700"
-                      >
-                        View
-                      </Link>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <div className="flex gap-2">
+                        <Link
+                          href={`/notes/${note.id}`}
+                          className="text-blue-600 hover:text-blue-700 text-sm"
+                        >
+                          View
+                        </Link>
+                        <Link
+                          href={`/notes/${note.id}/edit`}
+                          className="text-green-600 hover:text-green-700 text-sm"
+                        >
+                          Edit
+                        </Link>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -264,6 +504,55 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* Detail Modal */}
+      <DetailModal
+        isOpen={showDetailModal}
+        title="Note Details"
+        fields={selectedNote ? [
+          { label: 'Patient Name', value: selectedNote.patientName },
+          { label: 'Patient ID', value: selectedNote.patientId },
+          { label: 'Note Type', value: <span className="badge badge-blue">{selectedNote.noteType}</span> },
+          { label: 'Status', value: (
+            <span className={`badge ${
+              selectedNote.status === 'SIGNED' ? 'badge-green' :
+              selectedNote.status === 'DRAFT' ? 'badge-yellow' :
+              'badge-gray'
+            }`}>
+              {selectedNote.status}
+            </span>
+          )},
+          { label: 'Encounter Date', value: new Date(selectedNote.encounterDate).toLocaleDateString() },
+          { label: 'Created', value: new Date(selectedNote.createdAt).toLocaleString() },
+          { label: 'Author', value: selectedNote.author ? `${selectedNote.author.firstName} ${selectedNote.author.lastName}` : 'N/A' },
+          { label: 'Note ID', value: selectedNote.id },
+        ] : []}
+        onClose={() => setShowDetailModal(false)}
+        onEdit={handleEdit}
+        onDelete={handleDeleteFromModal}
+      />
+
+      {/* Single Delete Confirm */}
+      <ConfirmDialog
+        isOpen={showDeleteConfirm}
+        title="Delete Note"
+        message="Are you sure you want to delete this note? This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={handleConfirmDelete}
+        onCancel={() => { setShowDeleteConfirm(false); setNoteToDelete(null); }}
+      />
+
+      {/* Bulk Delete Confirm */}
+      <ConfirmDialog
+        isOpen={showBulkDeleteConfirm}
+        title="Delete Selected Notes"
+        message={`Are you sure you want to delete ${selectedIds.size} selected notes? This action cannot be undone.`}
+        confirmLabel={`Delete ${selectedIds.size} Notes`}
+        variant="danger"
+        onConfirm={handleBulkDelete}
+        onCancel={() => setShowBulkDeleteConfirm(false)}
+      />
     </Layout>
   );
 }
