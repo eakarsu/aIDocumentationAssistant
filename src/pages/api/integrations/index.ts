@@ -10,30 +10,47 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (req.method === 'GET') {
     try {
-      const { type, status } = req.query;
+      const { type, status, page = '1', limit = '20' } = req.query;
+
+      const pageNum = Math.max(1, parseInt(page as string) || 1);
+      const limitNum = Math.min(100, Math.max(1, parseInt(limit as string) || 20));
+      const skip = (pageNum - 1) * limitNum;
 
       const where: any = {};
       if (type) where.type = type;
       if (status) where.status = status;
 
-      const integrations = await prisma.integration.findMany({
-        where,
-        select: {
-          id: true,
-          name: true,
-          type: true,
-          status: true,
-          lastSyncAt: true,
-          isActive: true,
-          createdAt: true,
-          updatedAt: true,
-          // Don't expose credentials
-          configuration: true,
-        },
-        orderBy: { name: 'asc' },
-      });
+      const [integrations, total] = await Promise.all([
+        prisma.integration.findMany({
+          where,
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            status: true,
+            lastSyncAt: true,
+            isActive: true,
+            createdAt: true,
+            updatedAt: true,
+            // Don't expose credentials
+            configuration: true,
+          },
+          orderBy: { name: 'asc' },
+          skip,
+          take: limitNum,
+        }),
+        prisma.integration.count({ where }),
+      ]);
 
-      res.status(200).json(integrations);
+      res.status(200).json({
+        data: integrations,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum),
+        },
+      });
     } catch (error) {
       console.error('Get integrations error:', error);
       res.status(500).json({ error: 'Internal server error' });

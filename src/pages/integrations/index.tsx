@@ -78,7 +78,9 @@ export default function IntegrationsPage() {
     setLoading(true);
     try {
       const data = await api.getIntegrations();
-      setIntegrations(data);
+      // Backend may return either an array (legacy) or { data, pagination }
+      const list = Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : []);
+      setIntegrations(list);
     } catch (error) {
       console.error('Failed to load integrations:', error);
       showToast('Failed to load integrations', 'error');
@@ -271,6 +273,23 @@ export default function IntegrationsPage() {
                   >
                     {integration.isActive ? 'Disable' : 'Enable'}
                   </button>
+                  {integration.type === 'EHR' && integration.isActive && (
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        try {
+                          const r = await api.fhirPull(integration.id, { resourceType: 'Patient' });
+                          showToast(`FHIR Pull OK: ${r.count} resource(s)`, 'success');
+                        } catch (err: any) {
+                          showToast(err?.message || 'FHIR pull failed', 'error');
+                        }
+                      }}
+                      className="btn btn-primary text-sm"
+                      title="Test FHIR R4 connectivity (Patient resource)"
+                    >
+                      Test FHIR
+                    </button>
+                  )}
                 </div>
               )}
             </div>

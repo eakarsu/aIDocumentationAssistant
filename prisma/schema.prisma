@@ -145,6 +145,8 @@ model Note {
   aiCodes         Json?
   aiQualityScore  Float?
   aiFollowUps     Json?
+  // Generic JSONB blob for any structured AI output (parseAIJson 3-strategy)
+  aiResults       Json?
 
   // Encryption for HIPAA
   isEncrypted     Boolean      @default(true)
@@ -162,8 +164,9 @@ model Note {
   comments        Comment[]
   amendments      Amendment[]
   coSignatures    CoSignature[]
-  medicalCodes    MedicalCode[]
-  auditLogs       AuditLog[]
+  medicalCodes       MedicalCode[]
+  auditLogs          AuditLog[]
+  billingReviewQueue BillingReviewQueue?
 
   @@index([patientId])
   @@index([authorId])
@@ -921,4 +924,27 @@ enum WebhookEventStatus {
   PROCESSING
   COMPLETED
   FAILED
+}
+
+model BillingReviewQueue {
+  id          String              @id @default(uuid())
+  noteId      String
+  note        Note                @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  status      BillingReviewStatus @default(PENDING)
+  reviewedBy  String?
+  reviewedAt  DateTime?
+  notes       String?             @db.Text
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@unique([noteId])
+  @@index([status])
+}
+
+enum BillingReviewStatus {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  NEEDS_CORRECTION
 }

@@ -2,7 +2,10 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import prisma from '@/lib/prisma';
 import { getCurrentUser, createAuditLog } from '@/lib/auth';
 import { transcribeAudio, extractMedicalTerms } from '@/lib/ai-service';
+import { rateLimit } from '@/lib/rate-limit';
 import fs from 'fs';
+
+const aiRateLimit = rateLimit({ windowMs: 60 * 60 * 1000, maxRequests: 20 });
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
@@ -13,6 +16,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!user) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+
+  const allowed = await aiRateLimit(req, res);
+  if (!allowed) return;
 
   const { id } = req.query;
 

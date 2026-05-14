@@ -181,6 +181,19 @@ export const api = {
       body: JSON.stringify({ transcription }),
     }),
 
+  // Apply pass 5 — backlog
+  semanticSearch: (query: string, limit?: number) =>
+    fetchApi('/api/ai/semantic-search', { method: 'POST', body: JSON.stringify({ query, limit }) }),
+
+  diffSoapSummary: (note_id_a: string, note_id_b: string) =>
+    fetchApi('/api/ai/diff-soap-summary', { method: 'POST', body: JSON.stringify({ note_id_a, note_id_b }) }),
+
+  exportFhir: (note_id: string) =>
+    fetchApi(`/api/notes/export-fhir?note_id=${encodeURIComponent(note_id)}`),
+
+  ehrSync: (note_id: string) =>
+    fetchApi('/api/integrations/ehr-sync', { method: 'POST', body: JSON.stringify({ note_id }) }),
+
   // Templates
   getTemplates: (params?: Record<string, string>) =>
     fetchApi(`/api/templates?${new URLSearchParams(params || {})}`),
@@ -210,7 +223,8 @@ export const api = {
     fetchApi(`/api/recordings/${id}/transcribe`, { method: 'POST' }),
 
   // Integrations
-  getIntegrations: () => fetchApi('/api/integrations'),
+  getIntegrations: (params?: Record<string, string>) =>
+    fetchApi(`/api/integrations${params ? `?${new URLSearchParams(params)}` : ''}`),
 
   getIntegration: (id: string) => fetchApi(`/api/integrations/${id}`),
 
@@ -219,6 +233,33 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+
+  // FHIR EHR connectors
+  fhirPull: (id: string, body: { resourceType: string; patientId?: string }) =>
+    fetchApi(`/api/integrations/${id}/fhir-pull`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  fhirPushNote: (id: string, note_id: string) =>
+    fetchApi(`/api/integrations/${id}/fhir-push-note`, {
+      method: 'POST',
+      body: JSON.stringify({ note_id }),
+    }),
+
+  // Billing review queue
+  getBillingQueue: (params?: Record<string, string>) =>
+    fetchApi(`/api/billing/queue${params ? `?${new URLSearchParams(params)}` : ''}`),
+
+  decideBillingItem: (id: string, decision: string, notes?: string) =>
+    fetchApi(`/api/billing/${id}/decision`, {
+      method: 'POST',
+      body: JSON.stringify({ decision, notes }),
+    }),
+
+  // Repository sync
+  syncRepository: (id: string) =>
+    fetchApi(`/api/docs/repositories/${id}/sync`, { method: 'POST' }),
 
   // Specialties
   getSpecialties: () => fetchApi('/api/specialties'),

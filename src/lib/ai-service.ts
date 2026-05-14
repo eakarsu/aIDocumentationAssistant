@@ -1,6 +1,6 @@
 // OpenRouter API for AI features
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'anthropic/claude-3-haiku';
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'anthropic/claude-3-5-sonnet-20241022';
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
@@ -29,9 +29,24 @@ export interface QualityCheckResult {
   suggestions: string[];
 }
 
+// Re-export 3-strategy parser from shared module for backward compatibility
+import { parseAIJson as sharedParseAIJson } from './parseAIJson';
+
+/**
+ * Legacy helper: returns the JSON substring of a response, or null.
+ * Internally relies on the shared 3-strategy parseAIJson.
+ */
 function extractJSON(content: string): string | null {
-  // Try to find JSON object or array in the response
-  // First, try to find a complete JSON object
+  // Strategy 1: fenced code block
+  const fenceMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch) {
+    try {
+      JSON.parse(fenceMatch[1].trim());
+      return fenceMatch[1].trim();
+    } catch (_) {}
+  }
+
+  // Strategy 2: balanced brace scan
   let braceCount = 0;
   let startIndex = -1;
   let inString = false;
@@ -63,13 +78,27 @@ function extractJSON(content: string): string | null {
     } else if (char === '}') {
       braceCount--;
       if (braceCount === 0 && startIndex !== -1) {
-        return content.substring(startIndex, i + 1);
+        const candidate = content.substring(startIndex, i + 1);
+        try {
+          JSON.parse(candidate);
+          return candidate;
+        } catch (_) {
+          startIndex = -1;
+        }
       }
     }
   }
 
-  return null;
+  // Strategy 3: try whole string
+  try {
+    JSON.parse(content);
+    return content;
+  } catch (_) {
+    return null;
+  }
 }
+
+export const parseAIJson = sharedParseAIJson;
 
 async function callOpenRouter(messages: { role: string; content: string }[], jsonResponse = true): Promise<string> {
   const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
@@ -324,11 +353,64 @@ export async function fillTemplate(
   }
 }
 
-export async function detectSpeakers(audioBuffer: Buffer): Promise<{ speaker: string; segments: { start: number; end: number; text: string }[] }[]> {
-  // Speaker diarization would typically use a specialized service
-  // For now, return a placeholder that the UI can work with
-  return [
-    { speaker: 'Provider', segments: [] },
-    { speaker: 'Patient', segments: [] },
-  ];
+export async function detectSpeakers(transcript: string): Promise<{ speaker: string; segments: { start: number; end: number; text: string }[] }[]> {
+  // Use AI to identify and label speakers based on conversation context
+  if (!OPENROUTER_API_KEY) {
+    console.log('No OPENROUTER_API_KEY - returning default speaker structure');
+    return [
+      { speaker: 'Provider', segments: [] },
+      { speaker: 'Patient', segments: [] },
+    ];
+  }
+
+  try {
+    const response = await callOpenRouter([
+      {
+        role: 'system',
+        content: `You are a medical conversation analyst specializing in speaker diarization. Given a medical transcript, identify distinct speakers and attribute text segments to each speaker.
+
+Use context clues to identify speakers:
+- Clinical language, questions, examinations → likely "Provider" (or use specific title/name if mentioned: "Dr. Smith", "Nurse Jones")
+- Patient descriptions, symptoms, personal info → likely "Patient"
+- Third parties if present → "Family Member", "Interpreter", etc.
+
+Split the transcript into segments attributed to each speaker. Return ONLY valid JSON with this structure:
+{
+  "speakers": [
+    {
+      "speaker": "Provider",
+      "segments": [
+        { "start": 0, "end": 1, "text": "exact text from transcript" }
+      ]
+    },
+    {
+      "speaker": "Patient",
+      "segments": [
+        { "start": 2, "end": 3, "text": "exact text from transcript" }
+      ]
+    }
+  ]
+}
+
+The start/end values are sequential segment indices (0-based). Assign each portion of the transcript a unique sequential index.`,
+      },
+      {
+        role: 'user',
+        content: `Please identify and attribute speakers in this medical transcript:\n\n${transcript}`,
+      },
+    ]);
+
+    const result = JSON.parse(response);
+    return result.speakers || [
+      { speaker: 'Provider', segments: [] },
+      { speaker: 'Patient', segments: [] },
+    ];
+  } catch (error) {
+    console.error('Speaker diarization error:', error);
+    // Graceful fallback
+    return [
+      { speaker: 'Provider', segments: [] },
+      { speaker: 'Patient', segments: [] },
+    ];
+  }
 }

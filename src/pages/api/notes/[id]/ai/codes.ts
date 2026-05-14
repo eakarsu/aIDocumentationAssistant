@@ -3,6 +3,9 @@ import prisma from '@/lib/prisma';
 import { getCurrentUser, createAuditLog } from '@/lib/auth';
 import { suggestMedicalCodes } from '@/lib/ai-service';
 import { CodeType } from '@prisma/client';
+import { rateLimit } from '@/lib/rate-limit';
+
+const aiRateLimit = rateLimit({ windowMs: 60 * 60 * 1000, maxRequests: 20 });
 
 // Normalize AI-returned code types to valid enum values
 function normalizeCodeType(codeType: string): CodeType {
@@ -32,6 +35,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!user) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+
+  const allowed = await aiRateLimit(req, res);
+  if (!allowed) return;
 
   const { id } = req.query;
 
