@@ -1,6 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import prisma from '@/lib/prisma';
 import crypto from 'crypto';
+import { decrypt } from '@/lib/encryption';
+
+const { enqueueJob } = require('@/lib/governance/runtime.cjs');
 
 // Disable body parsing for raw body access
 export const config = {
@@ -24,10 +27,9 @@ function verifySignature(payload: Buffer, signature: string, secret: string): bo
     .update(payload)
     .digest('hex')}`;
 
-  return crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(expectedSignature)
-  );
+  const supplied = Buffer.from(signature);
+  const expected = Buffer.from(expectedSignature);
+  return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -43,7 +45,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const eventType = req.headers['x-github-event'] as string;
     const deliveryId = req.headers['x-github-delivery'] as string;
 
-    if (!signature || !eventType) {
+    if (!signature || !eventType || !deliveryId) {
       return res.status(400).json({ error: 'Missing required headers' });
     }
 
@@ -53,13 +55,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: 'Missing repository information' });
     }
 
-    const repository = await prisma.repository.findUnique({
-      where: {
-        provider_fullName: {
-          provider: 'GITHUB',
-          fullName: repoFullName,
-        },
-      },
+    const repositoryId = String(req.query.repositoryId || '');
+    if (!repositoryId) return res.status(400).json({ error: 'repositoryId query parameter is required' });
+    const repository = await prisma.repository.findFirst({
+      where: { id: repositoryId, provider: 'GITHUB', fullName: repoFullName },
     });
 
     if (!repository) {
@@ -67,38 +66,53 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     // Verify webhook signature
-    if (repository.webhookSecret) {
-      const isValid = verifySignature(rawBody, signature, repository.webhookSecret);
-      if (!isValid) {
-        return res.status(401).json({ error: 'Invalid signature' });
-      }
-    }
+    if (!repository.webhookSecret) return res.status(409).json({ error: 'Repository webhook secret is not configured' });
+    const isValid = verifySignature(rawBody, signature, decrypt(repository.webhookSecret));
+    if (!isValid) return res.status(401).json({ error: 'Invalid signature' });
+
+    const duplicate = await prisma.webhookEvent.findUnique({
+      where: { repositoryId_deliveryId: { repositoryId: repository.id, deliveryId } },
+    });
+    if (duplicate) return res.status(200).json({ message: 'Webhook already accepted', eventId: duplicate.id, eventType, deliveryId });
 
     // Store webhook event
     const webhookEvent = await prisma.webhookEvent.create({
       data: {
         repositoryId: repository.id,
+        deliveryId,
         eventType,
         payload,
         status: 'PENDING',
       },
     });
 
-    // Process specific events
+    let syncJob = null;
     if (eventType === 'push') {
-      // Update last commit SHA
-      const headCommit = payload.head_commit?.id;
-      if (headCommit) {
-        await prisma.repository.update({
-          where: { id: repository.id },
-          data: { lastCommitSha: headCommit },
-        });
-      }
-
-      // Mark event as processing (actual processing would be done by a worker)
+      const membership = await prisma.tenantMembership.findUnique({
+        where: { tenantId_userId: { tenantId: repository.tenantId, userId: repository.createdById } },
+      });
+      if (!membership) return res.status(409).json({ error: 'Repository owner has no tenant membership' });
+      syncJob = await enqueueJob(prisma, {
+        tenantId: repository.tenantId,
+        tenantRole: membership.role,
+        userId: repository.createdById,
+        body: {
+          tenantId: repository.tenantId,
+          repositoryId: repository.id,
+          kind: 'REPOSITORY_SYNC',
+          task: 'Incrementally synchronize permitted documentation sources and propagate deletions.',
+          audience: 'documentation index',
+          sourceIds: [],
+          idempotencyKey: `github-delivery:${deliveryId}`,
+          timeoutMs: 120000,
+          costBudgetCents: 0,
+          latencyBudgetMs: 120000,
+          requireApproval: false,
+        },
+      });
       await prisma.webhookEvent.update({
         where: { id: webhookEvent.id },
-        data: { status: 'PROCESSING' },
+        data: { status: 'COMPLETED', processedAt: new Date() },
       });
     }
 
@@ -107,6 +121,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       eventId: webhookEvent.id,
       eventType,
       deliveryId,
+      syncJobId: syncJob?.id || null,
     });
   } catch (error) {
     console.error('GitHub webhook error:', error);

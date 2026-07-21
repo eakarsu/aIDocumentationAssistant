@@ -11,6 +11,7 @@ const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6' },
   { name: 'Notes', href: '/notes', icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' },
   { name: 'Docs', href: '/docs', icon: 'M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253' },
+  { name: 'AI Jobs', href: '/governance/jobs', icon: 'M9 12h6m-3-3v6m9-3a9 9 0 11-18 0 9 9 0 0118 0z' },
   { name: 'Doc Consistency', href: '/doc-consistency-risk', icon: 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.031 9-11.622 0-1.042-.133-2.052-.382-3.016z' },
   { name: 'Templates', href: '/templates', icon: 'M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z' },
   { name: 'Recordings', href: '/recordings', icon: 'M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z' },
@@ -22,14 +23,14 @@ const navigation = [
 ];
 
 export default function Layout({ children }: LayoutProps) {
-  const { user, logout } = useAuth();
+  const { user, logout, memberships, activeTenantId, switchTenant } = useAuth();
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
 
   const filteredNavigation = navigation.filter((item: any) => {
     if (item.adminOnly && !(user?.role === 'ADMIN' || user?.role === 'AUDITOR')) return false;
-    if (item.billingOnly && !(user?.role === 'ADMIN' || user?.role === 'BILLING')) return false;
+    if (item.billingOnly && !(user?.role === 'ADMIN' || user?.role === 'BILLING_STAFF')) return false;
     return true;
   });
 
@@ -106,6 +107,23 @@ export default function Layout({ children }: LayoutProps) {
             </button>
 
             <div className="flex items-center space-x-4">
+              {memberships.length > 0 && (
+                <label className="flex items-center gap-2 text-xs text-gray-600">
+                  <span className="sr-only">Active workspace</span>
+                  <select
+                    aria-label="Active workspace"
+                    className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-800"
+                    value={activeTenantId || ''}
+                    onChange={(event) => switchTenant(event.target.value)}
+                  >
+                    {memberships.map((membership) => (
+                      <option key={membership.tenantId} value={membership.tenantId}>
+                        {membership.tenant.name} · {membership.role.toLowerCase()}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <div className="text-right">
                 <p className="text-sm font-medium text-gray-900">
                   {user?.firstName} {user?.lastName}

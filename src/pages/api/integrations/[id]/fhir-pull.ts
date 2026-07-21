@@ -20,7 +20,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const ALLOWED = new Set(['Patient', 'Encounter', 'Observation', 'Condition', 'Procedure', 'MedicationRequest']);
   if (!ALLOWED.has(resourceType)) {
-    return res.status(400).json({ error: `Unsupported FHIR resourceType. Allowed: ${[...ALLOWED].join(', ')}` });
+    return res.status(400).json({ error: `Unsupported FHIR resourceType. Allowed: ${Array.from(ALLOWED).join(', ')}` });
   }
 
   try {

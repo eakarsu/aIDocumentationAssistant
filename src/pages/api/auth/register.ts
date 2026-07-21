@@ -45,28 +45,36 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const validRoles = ['ADMIN', 'PROVIDER', 'NURSE', 'MEDICAL_ASSISTANT', 'BILLING_STAFF', 'AUDITOR'];
     const userRole = role && validRoles.includes(role) ? role : 'PROVIDER';
 
-    const user = await prisma.user.create({
-      data: {
-        email,
-        password: hashedPassword,
-        firstName,
-        lastName,
-        role: userRole,
-        specialty: specialty || null,
-        phone: phone || null,
-        emailVerified: false,
-        isActive: true,
-      },
-    });
-
-    // Create email verification token
     const verificationToken = uuidv4();
-    await prisma.emailVerification.create({
-      data: {
-        userId: user.id,
-        token: verificationToken,
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
-      },
+    const tenantSlug = `workspace-${uuidv4()}`;
+    const user = await prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: {
+          email,
+          password: hashedPassword,
+          firstName,
+          lastName,
+          role: userRole,
+          specialty: specialty || null,
+          phone: phone || null,
+          emailVerified: false,
+          isActive: true,
+        },
+      });
+      const tenant = await tx.tenant.create({
+        data: { name: `${firstName}'s workspace`, slug: tenantSlug },
+      });
+      await tx.tenantMembership.create({
+        data: { tenantId: tenant.id, userId: created.id, role: 'OWNER' },
+      });
+      await tx.emailVerification.create({
+        data: {
+          userId: created.id,
+          token: verificationToken,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        },
+      });
+      return created;
     });
 
     await createAuditLog(user.id, 'CREATE', 'User', user.id, null, { email: user.email }, req);

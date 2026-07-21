@@ -7,10 +7,12 @@ const getToken = () => {
 
 async function fetchApi(endpoint: string, options: RequestInit = {}) {
   const token = getToken();
+  const tenantId = typeof window !== 'undefined' ? localStorage.getItem('tenantId') : null;
 
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(tenantId ? { 'x-tenant-id': tenantId } : {}),
     ...options.headers,
   };
 
@@ -257,10 +259,6 @@ export const api = {
       body: JSON.stringify({ decision, notes }),
     }),
 
-  // Repository sync
-  syncRepository: (id: string) =>
-    fetchApi(`/api/docs/repositories/${id}/sync`, { method: 'POST' }),
-
   // Specialties
   getSpecialties: () => fetchApi('/api/specialties'),
 
@@ -449,7 +447,14 @@ export const api = {
     fetchApi(`/api/docs/repositories/${id}`, { method: 'DELETE' }),
 
   syncRepository: (id: string) =>
-    fetchApi(`/api/docs/repositories/${id}/sync`, { method: 'POST' }),
+    fetchApi(`/api/docs/repositories/${id}/sync`, {
+      method: 'POST',
+      headers: {
+        'Idempotency-Key': typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `sync-${Date.now()}`,
+      },
+    }),
 
   getRepositoryFiles: (id: string, params?: Record<string, string>) =>
     fetchApi(`/api/docs/repositories/${id}/files?${new URLSearchParams(params || {})}`),

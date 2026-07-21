@@ -12,14 +12,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   const user = await getCurrentUser(req);
   if (!user) return res.status(401).json({ error: 'Unauthorized' });
-  if (!['ADMIN', 'BILLING'].includes(user.role)) return res.status(403).json({ error: 'Forbidden' });
+  if (!['ADMIN', 'BILLING_STAFF'].includes(user.role)) return res.status(403).json({ error: 'Forbidden' });
 
   const { id } = req.query;
   const { decision, notes } = req.body || {};
 
   const VALID = new Set(['APPROVED', 'REJECTED', 'NEEDS_CORRECTION', 'IN_REVIEW']);
   if (!VALID.has(decision)) {
-    return res.status(400).json({ error: `Invalid decision. Allowed: ${[...VALID].join(', ')}` });
+    return res.status(400).json({ error: `Invalid decision. Allowed: ${Array.from(VALID).join(', ')}` });
   }
 
   try {

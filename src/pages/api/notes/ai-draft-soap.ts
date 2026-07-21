@@ -113,7 +113,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const recentNotes = await prisma.note.findMany({
         where: {
           patientId: patient_id,
-          status: { in: ['SIGNED', 'COSIGNED', 'FINAL'] },
+          status: 'SIGNED',
         },
         orderBy: { encounterDate: 'desc' },
         take: 3,

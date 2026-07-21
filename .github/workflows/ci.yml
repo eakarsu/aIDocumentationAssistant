@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/documentation_ci?schema=public
+      JWT_SECRET: ci-only-jwt-secret-that-is-longer-than-thirty-two-bytes
+      ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      NEXT_PUBLIC_APP_URL: http://127.0.0.1:3000
+      PUPPETEER_SKIP_DOWNLOAD: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run db:validate
+      - run: npm run db:generate
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+      - run: node --check src/lib/governance/runtime.cjs
+      - run: node --check scripts/governance-worker.cjs
+      - run: bash -n start.sh
+      - name: Reject unsafe launcher behavior
+        run: |
+          ! grep -Eiv '^[[:space:]]*#|echo|printf|fail[[:space:]]' start.sh | grep -Eiq 'npm (install|ci|run seed)|kill[[:space:]]+-9|createdb|DROP DATABASE|TRUNCATE|force-reset|prisma db push'
+      - name: Reject destructive production migration statements
+        run: '! grep -Eiq ''DROP[[:space:]]+(DATABASE|SCHEMA|TABLE)|TRUNCATE|DELETE[[:space:]]+FROM'' prisma/migrations/*/migration.sql'
+
+  migration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: migration_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d migration_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: migration_ci
+    steps:
+      - uses: actions/checkout@v4
+      - run: psql -v ON_ERROR_STOP=1 -f scripts/migration-smoke.sql
+      - run: psql -v ON_ERROR_STOP=1 -f prisma/migrations/202607180001_governed_documentation/migration.sql
+      - run: psql -v ON_ERROR_STOP=1 -f prisma/migrations/202607180001_governed_documentation/migration.sql
+      - name: Verify backfill and deletion-propagation schema
+        run: |
+          test "$(psql -Atc 'SELECT count(*) FROM "Repository" WHERE "tenantId" IS NULL')" = "0"
+          test "$(psql -Atc 'SELECT count(*) FROM "TenantMembership" WHERE "userId" = '\''existing-user'\''')" = "1"
+          test "$(psql -Atc 'SELECT count(*) FROM information_schema.columns WHERE table_name = '\''ParsedCodeFile'\'' AND column_name IN ('\''deletedAt'\'', '\''permissions'\'', '\''contentText'\'')')" = "3"

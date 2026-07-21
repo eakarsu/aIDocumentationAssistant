@@ -1,12 +1,14 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import prisma from '@/lib/prisma';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, getTenantContext } from '@/lib/auth';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const user = await getCurrentUser(req);
   if (!user) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  const tenant = await getTenantContext(req, user.id);
+  if (!tenant) return res.status(403).json({ error: 'A valid x-tenant-id membership is required' });
 
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -15,17 +17,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const { id } = req.query;
 
   try {
-    const repository = await prisma.repository.findUnique({
-      where: { id: id as string },
+    const repository = await prisma.repository.findFirst({
+      where: { id: id as string, tenantId: tenant.tenantId },
     });
 
     if (!repository) {
       return res.status(404).json({ error: 'Repository not found' });
-    }
-
-    // Check access
-    if (user.role !== 'ADMIN' && repository.createdById !== user.id) {
-      return res.status(403).json({ error: 'Access denied' });
     }
 
     const { language, search, page = '1', limit = '50' } = req.query;
@@ -33,6 +30,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const where: any = {
       repositoryId: id as string,
+      deletedAt: null,
     };
 
     if (language) {

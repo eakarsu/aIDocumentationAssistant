@@ -59,6 +59,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     await createAuditLog(user.id, 'LOGIN', 'User', user.id, null, { success: true }, req);
 
+    const memberships = await prisma.tenantMembership.findMany({
+      where: { userId: user.id },
+      select: { tenantId: true, role: true, tenant: { select: { name: true, slug: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+
     res.status(200).json({
       token,
       user: {
@@ -69,6 +75,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         role: user.role,
         specialty: user.specialty,
       },
+      memberships,
     });
   } catch (error) {
     console.error('Login error:', error);

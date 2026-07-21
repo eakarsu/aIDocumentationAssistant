@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import prisma from '@/lib/prisma';
-import { getCurrentUser, createAuditLog } from '@/lib/auth';
+import { getCurrentUser, getTenantContext, createAuditLog } from '@/lib/auth';
 import * as parser from 'comment-parser';
 
 interface ParsedFunction {
@@ -136,6 +136,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!user) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  const tenant = await getTenantContext(req, user.id);
+  if (!tenant) return res.status(403).json({ error: 'A valid x-tenant-id membership is required' });
 
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -156,13 +158,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // If repositoryId provided, store parsed data
     if (repositoryId && filePath) {
-      const repository = await prisma.repository.findUnique({
-        where: { id: repositoryId },
+      const repository = await prisma.repository.findFirst({
+        where: { id: repositoryId, tenantId: tenant.tenantId },
       });
 
-      if (repository && (user.role === 'ADMIN' || repository.createdById === user.id)) {
+      if (repository) {
         const fileHash = require('crypto')
-          .createHash('md5')
+          .createHash('sha256')
           .update(content)
           .digest('hex');
 
@@ -177,14 +179,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             repositoryId,
             filePath,
             language,
+            contentText: content,
             functions: JSON.parse(JSON.stringify(functions)),
             fileHash,
             lineCount: content.split('\n').length,
+            permissions: [`tenant:${tenant.tenantId}`],
+            lastIndexedAt: new Date(),
           },
           update: {
+            contentText: content,
             functions: JSON.parse(JSON.stringify(functions)),
             fileHash,
             lineCount: content.split('\n').length,
+            permissions: [`tenant:${tenant.tenantId}`],
+            lastIndexedAt: new Date(),
+            deletedAt: null,
             updatedAt: new Date(),
           },
         });

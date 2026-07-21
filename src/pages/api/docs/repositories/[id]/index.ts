@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import prisma from '@/lib/prisma';
-import { getCurrentUser, createAuditLog } from '@/lib/auth';
+import { getCurrentUser, getTenantContext, createAuditLog } from '@/lib/auth';
 import { encrypt } from '@/lib/encryption';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -8,26 +8,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!user) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  const tenant = await getTenantContext(req, user.id);
+  if (!tenant) return res.status(403).json({ error: 'A valid x-tenant-id membership is required' });
 
   const { id } = req.query;
 
-  const repository = await prisma.repository.findUnique({
-    where: { id: id as string },
+  const repository = await prisma.repository.findFirst({
+    where: { id: id as string, tenantId: tenant.tenantId },
   });
 
   if (!repository) {
     return res.status(404).json({ error: 'Repository not found' });
   }
 
-  // Check access
-  if (user.role !== 'ADMIN' && repository.createdById !== user.id) {
-    return res.status(403).json({ error: 'Access denied' });
-  }
-
   if (req.method === 'GET') {
     try {
-      const fullRepo = await prisma.repository.findUnique({
-        where: { id: id as string },
+      const fullRepo = await prisma.repository.findFirst({
+        where: { id: id as string, tenantId: tenant.tenantId },
         include: {
           createdBy: {
             select: {
@@ -76,13 +73,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   } else if (req.method === 'PUT') {
     try {
-      const { branch, accessToken, syncPaths, syncEnabled } = req.body;
+      if (!['OWNER', 'ADMIN'].includes(tenant.role)) return res.status(403).json({ error: 'Tenant administrator role required' });
+      const { branch, accessToken, webhookSecret, syncPaths, syncEnabled, connectorPolicy } = req.body;
 
       const updateData: any = {};
 
-      if (branch) updateData.branch = branch;
-      if (accessToken) updateData.accessToken = encrypt(accessToken);
-      if (syncPaths !== undefined) updateData.syncPaths = syncPaths;
+      if (branch) {
+        if (typeof branch !== 'string' || !/^[A-Za-z0-9._\/-]{1,255}$/.test(branch) || branch.includes('..')) return res.status(400).json({ error: 'Invalid branch' });
+        updateData.branch = branch;
+      }
+      if (accessToken) {
+        if (typeof accessToken !== 'string' || accessToken.length < 20 || accessToken.length > 2_000) return res.status(400).json({ error: 'Invalid access token' });
+        updateData.accessToken = encrypt(accessToken);
+      }
+      if (webhookSecret) {
+        if (typeof webhookSecret !== 'string' || webhookSecret.length < 32 || webhookSecret.length > 500) return res.status(400).json({ error: 'Webhook secret must contain 32-500 characters' });
+        updateData.webhookSecret = encrypt(webhookSecret);
+      }
+      if (syncPaths !== undefined) {
+        if (!Array.isArray(syncPaths) || syncPaths.length > 50 || syncPaths.some((path: unknown) => typeof path !== 'string' || !path || path.startsWith('/') || path.includes('..') || path.length > 500)) return res.status(400).json({ error: 'Invalid syncPaths' });
+        updateData.syncPaths = syncPaths;
+      }
+      if (connectorPolicy !== undefined) {
+        const principals = connectorPolicy?.readPrincipals;
+        if (!Array.isArray(principals) || principals.length > 100 || principals.some((principal: unknown) => typeof principal !== 'string' || !/^(tenant|user|role):[A-Za-z0-9_.:-]+$/.test(principal))) return res.status(400).json({ error: 'Invalid connector policy' });
+        updateData.connectorPolicy = { readPrincipals: principals };
+      }
       if (syncEnabled !== undefined) updateData.syncEnabled = syncEnabled;
 
       const updatedRepo = await prisma.repository.update({
@@ -103,6 +119,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   } else if (req.method === 'DELETE') {
     try {
+      if (!['OWNER', 'ADMIN'].includes(tenant.role)) return res.status(403).json({ error: 'Tenant administrator role required' });
       await prisma.repository.delete({
         where: { id: id as string },
       });

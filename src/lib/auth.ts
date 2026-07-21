@@ -3,8 +3,15 @@ import bcrypt from 'bcryptjs';
 import { NextApiRequest } from 'next';
 import prisma from './prisma';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key';
 const TOKEN_EXPIRY = '24h';
+
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret || Buffer.byteLength(secret) < 32 || /fallback|default|change|replace|example|your[-_ ]?secret/i.test(secret)) {
+    throw new Error('JWT_SECRET must be a non-placeholder secret of at least 32 bytes');
+  }
+  return secret;
+}
 
 export interface TokenPayload {
   userId: string;
@@ -21,15 +28,31 @@ export async function verifyPassword(password: string, hashedPassword: string): 
 }
 
 export function generateToken(payload: TokenPayload): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: TOKEN_EXPIRY });
+  return jwt.sign(payload, getJwtSecret(), { expiresIn: TOKEN_EXPIRY, algorithm: 'HS256' });
 }
 
 export function verifyToken(token: string): TokenPayload | null {
   try {
-    return jwt.verify(token, JWT_SECRET) as TokenPayload;
+    return jwt.verify(token, getJwtSecret(), { algorithms: ['HS256'] }) as TokenPayload;
   } catch {
     return null;
   }
+}
+
+export async function getTenantContext(req: NextApiRequest, userId: string) {
+  const requested = req.headers['x-tenant-id'];
+  const requestedTenantId = Array.isArray(requested) ? requested[0] : requested;
+  const memberships = await prisma.tenantMembership.findMany({
+    where: {
+      userId,
+      ...(requestedTenantId ? { tenantId: requestedTenantId } : {}),
+    },
+    select: { tenantId: true, role: true },
+    take: requestedTenantId ? 1 : 2,
+  });
+  if (!memberships.length) return null;
+  if (!requestedTenantId && memberships.length !== 1) return null;
+  return memberships[0];
 }
 
 export function getTokenFromRequest(req: NextApiRequest): string | null {

@@ -45,6 +45,10 @@ model User {
   docCollaborators  DocCollaborator[]
   docExports        DocExport[]
   repositories      Repository[]
+  tenantMemberships TenantMembership[]
+  governedToolJobs  GovernedToolJob[] @relation("GovernedToolJobRequester")
+  aiRuns            AiRun[] @relation("AiRunRequester")
+  humanApprovals    HumanApproval[] @relation("HumanApprovalReviewer")
 
   // Auth features
   passwordResetTokens PasswordResetToken[]
@@ -804,6 +808,15 @@ model Repository {
   syncPaths       Json?          // Paths to scan for docs
   lastSyncAt      DateTime?
   lastCommitSha   String?
+  syncCursor      String?
+  lastSyncStatus  ConnectorSyncStatus @default(NEVER)
+  lastSyncError   String?              @db.Text
+  freshUntil      DateTime?
+  connectorPolicy Json?
+
+  // Tenant boundary
+  tenantId         String
+  tenant           Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   // Owner
   createdById     String
@@ -814,8 +827,11 @@ model Repository {
 
   parsedFiles     ParsedCodeFile[]
   webhookEvents   WebhookEvent[]
+  syncRuns        ConnectorSyncRun[]
+  governedToolJobs GovernedToolJob[]
 
-  @@unique([provider, fullName])
+  @@unique([provider, tenantId, fullName])
+  @@index([tenantId])
   @@index([createdById])
 }
 
@@ -833,10 +849,17 @@ model ParsedCodeFile {
   exports       Json?      // Array of exports
   imports       Json?      // Array of imports
   comments      Json?      // Top-level comments
+  contentText   String     @db.Text
 
   // File metadata
   fileHash      String     // For change detection
   lineCount     Int?
+  sourceCommitSha String?
+  sourceUrl       String?
+  permissions     Json?
+  lastSeenSyncId  String?
+  lastIndexedAt   DateTime @default(now())
+  deletedAt       DateTime?
 
   parsedAt      DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
@@ -846,11 +869,191 @@ model ParsedCodeFile {
   @@unique([repositoryId, filePath])
   @@index([repositoryId])
   @@index([language])
+  @@index([repositoryId, deletedAt])
+}
+
+// ==================== TENANT & GOVERNED AI OPERATIONS ====================
+
+model Tenant {
+  id              String   @id @default(uuid())
+  name            String
+  slug            String   @unique
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  memberships     TenantMembership[]
+  repositories    Repository[]
+  governedToolJobs GovernedToolJob[]
+  aiRuns          AiRun[]
+  humanApprovals  HumanApproval[]
+  evaluationCases EvaluationCase[]
+  evaluationRuns  EvaluationRun[]
+}
+
+model TenantMembership {
+  id        String     @id @default(uuid())
+  tenantId  String
+  userId    String
+  role      TenantRole @default(MEMBER)
+  createdAt DateTime   @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+}
+
+model ConnectorSyncRun {
+  id             String              @id @default(uuid())
+  repositoryId   String
+  status         ConnectorSyncStatus @default(QUEUED)
+  sourceRevision String?
+  cursor         String?
+  filesSeen      Int                 @default(0)
+  filesChanged   Int                 @default(0)
+  filesDeleted   Int                 @default(0)
+  errors         Json?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime            @default(now())
+
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@index([repositoryId, createdAt])
+  @@index([status])
+}
+
+model GovernedToolJob {
+  id               String        @id @default(uuid())
+  tenantId         String
+  repositoryId     String?
+  requestedById    String
+  kind             String
+  status           ToolJobStatus @default(QUEUED)
+  input            Json
+  output           Json?
+  error            Json?
+  idempotencyKey   String
+  attempt          Int           @default(0)
+  maxAttempts      Int           @default(3)
+  timeoutMs        Int           @default(30000)
+  costBudgetCents  Int           @default(25)
+  latencyBudgetMs  Int           @default(15000)
+  availableAt      DateTime      @default(now())
+  leaseOwner       String?
+  leaseExpiresAt   DateTime?
+  traceId          String
+  cancelRequestedAt DateTime?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  repository  Repository? @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+  requestedBy User       @relation("GovernedToolJobRequester", fields: [requestedById], references: [id])
+  aiRun       AiRun?
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([status, availableAt])
+  @@index([tenantId, createdAt])
+}
+
+model AiRun {
+  id                  String       @id @default(uuid())
+  tenantId            String
+  jobId               String       @unique
+  requestedById       String
+  toolName             String
+  model                String
+  inputSchemaVersion   String
+  outputSchemaVersion  String
+  output               Json
+  citations            Json
+  providerReceipt      Json?
+  promptDigest         String
+  outputDigest         String
+  inputTokens          Int          @default(0)
+  outputTokens         Int          @default(0)
+  costCents            Int          @default(0)
+  latencyMs            Int
+  qualityScore         Float
+  safetyScore          Float
+  gateDecision         GateDecision
+  traceId              String
+  createdAt            DateTime     @default(now())
+
+  tenant      Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  job         GovernedToolJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  requestedBy User            @relation("AiRunRequester", fields: [requestedById], references: [id])
+  approval    HumanApproval?
+
+  @@index([tenantId, createdAt])
+  @@index([gateDecision])
+}
+
+model HumanApproval {
+  id            String         @id @default(uuid())
+  tenantId      String
+  aiRunId       String         @unique
+  reviewerId    String
+  status        ApprovalStatus @default(PENDING)
+  attestations  Json
+  comment       String?        @db.Text
+  decidedAt     DateTime?
+  createdAt     DateTime       @default(now())
+
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  aiRun    AiRun  @relation(fields: [aiRunId], references: [id], onDelete: Cascade)
+  reviewer User  @relation("HumanApprovalReviewer", fields: [reviewerId], references: [id])
+
+  @@index([tenantId, status])
+}
+
+model EvaluationCase {
+  id             String   @id @default(uuid())
+  tenantId       String
+  name           String
+  toolName       String
+  input          Json
+  expected       Json
+  rubric         Json
+  enabled        Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  runs   EvaluationRun[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, toolName])
+}
+
+model EvaluationRun {
+  id           String       @id @default(uuid())
+  tenantId     String
+  caseId       String
+  output       Json
+  qualityScore Float
+  safetyScore  Float
+  costCents    Int
+  latencyMs    Int
+  decision     GateDecision
+  details      Json
+  createdAt    DateTime     @default(now())
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case   EvaluationCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([caseId])
 }
 
 model WebhookEvent {
   id            String     @id @default(uuid())
   repositoryId  String
+  deliveryId    String
   eventType     String     // push, pull_request, etc.
   payload       Json
 
@@ -864,6 +1067,7 @@ model WebhookEvent {
 
   @@index([repositoryId])
   @@index([status])
+  @@unique([repositoryId, deliveryId])
 }
 
 // ==================== DOCUMENTATION ENUMS ====================
@@ -897,6 +1101,49 @@ enum DocCollaboratorPerm {
   COMMENT
   EDIT
   ADMIN
+}
+
+enum TenantRole {
+  OWNER
+  ADMIN
+  MEMBER
+  REVIEWER
+  VIEWER
+}
+
+enum ConnectorSyncStatus {
+  NEVER
+  QUEUED
+  RUNNING
+  COMPLETED
+  PARTIAL
+  FAILED
+  CANCELLED
+}
+
+enum ToolJobStatus {
+  QUEUED
+  RUNNING
+  RETRY_WAIT
+  AWAITING_APPROVAL
+  APPROVED
+  REJECTED
+  COMPLETED
+  FAILED
+  DEAD_LETTER
+  CANCELLED
+}
+
+enum GateDecision {
+  PASS
+  REVIEW
+  BLOCK
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum ExportFormat {

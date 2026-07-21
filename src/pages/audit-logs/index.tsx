@@ -260,7 +260,7 @@ export default function AuditLogsPage() {
       {/* Logs Table */}
       <div className="card">
         {loading ? (
-          <TableSkeleton rows={10} cols={6} />
+          <TableSkeleton rows={10} columns={6} />
         ) : logs.length === 0 ? (
           <div className="text-center py-8 text-gray-500">No audit logs found.</div>
         ) : (
@@ -370,6 +370,7 @@ export default function AuditLogsPage() {
       {/* Detail Modal - read-only for audit logs */}
       {showDetailModal && selectedLog && (
         <DetailModal
+          isOpen={true}
           title={`Audit Log: ${getActionLabel(selectedLog.action)} ${getEntityTypeLabel(selectedLog.entityType)}`}
           fields={getDetailFields(selectedLog)}
           onClose={() => {

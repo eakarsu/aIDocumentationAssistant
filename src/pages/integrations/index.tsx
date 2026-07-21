@@ -373,6 +373,7 @@ export default function IntegrationsPage() {
       {/* Detail Modal */}
       {showDetailModal && selectedIntegration && (
         <DetailModal
+          isOpen={true}
           title={`Integration: ${selectedIntegration.name}`}
           fields={getDetailFields(selectedIntegration)}
           onClose={() => {

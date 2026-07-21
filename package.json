@@ -8,11 +8,16 @@
     "start": "next start",
     "lint": "next lint",
     "db:generate": "prisma generate",
+    "db:deploy": "prisma migrate deploy",
+    "db:validate": "prisma validate",
     "db:push": "prisma db push",
     "db:seed": "npx ts-node prisma/seed.ts",
     "db:seed-templates": "npx tsx prisma/seed-templates.ts",
     "db:migrate": "prisma migrate dev",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "worker:governance": "node scripts/governance-worker.cjs",
+    "test": "node --test src/lib/governance/*.test.cjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@babel/parser": "^7.28.6",

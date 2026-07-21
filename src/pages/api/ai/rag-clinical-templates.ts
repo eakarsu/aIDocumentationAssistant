@@ -29,7 +29,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     // Lexical retrieval: find templates whose name/specialty matches.
-    const templates = await prisma.template.findMany({
+    const templates = await prisma.noteTemplate.findMany({
       where: {
         OR: [
           { name: { contains: specialty, mode: 'insensitive' } },

@@ -479,6 +479,7 @@ export default function DocsPage() {
       {/* Detail Modal */}
       {showDetailModal && selectedDoc && (
         <DetailModal
+          isOpen={true}
           title={`Document: ${selectedDoc.title}`}
           fields={getDetailFields(selectedDoc)}
           onClose={() => {
@@ -493,6 +494,7 @@ export default function DocsPage() {
       {/* Confirm Dialog */}
       {showConfirm && (
         <ConfirmDialog
+          isOpen={true}
           title={confirmAction === 'bulkDelete'
             ? `Delete ${selectedIds.length} Document(s)?`
             : 'Delete Document?'
