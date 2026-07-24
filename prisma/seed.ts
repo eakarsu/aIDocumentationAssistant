@@ -3,6 +3,12 @@ import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
+function requireDemoPassword(): string {
+  const password = process.env.DEMO_PASSWORD;
+  if (!password || password.length < 12) throw new Error('DEMO_PASSWORD must be at least 12 characters');
+  return password;
+}
+
 async function main() {
   console.log('Seeding database with comprehensive data...');
 
@@ -40,7 +46,7 @@ async function main() {
   console.log(`Created ${specialties.length} specialties`);
 
   // ==================== USERS (20 users) ====================
-  const hashedPassword = await bcrypt.hash('password123', 10);
+  const hashedPassword = await bcrypt.hash(requireDemoPassword(), 10);
 
   const users = [
     { email: 'admin@healthcare.com', firstName: 'System', lastName: 'Administrator', role: UserRole.ADMIN, specialty: null },
@@ -1754,13 +1760,17 @@ A: The web app is mobile-responsive.`,
     '/api/audit-logs', '/api/integrations', '/api/codes', '/api/docs/search', '/api/auth/forgot-password',
   ];
   for (let i = 0; i < 15; i++) {
-    const entry = await prisma.rateLimitEntry.create({
-      data: {
-        key: `${ipAddresses[i]}:${apiEndpoints[i]}`,
+    const key = `${ipAddresses[i]}:${apiEndpoints[i]}`;
+    const data = {
+        key,
         count: Math.floor(Math.random() * 50) + 1,
         windowStart: new Date(Date.now() - Math.floor(Math.random() * 60000)),
         expiresAt: new Date(Date.now() + 60000),
-      },
+    };
+    const entry = await prisma.rateLimitEntry.upsert({
+      where: { key },
+      update: data,
+      create: data,
     });
     rateLimitEntries.push(entry);
   }

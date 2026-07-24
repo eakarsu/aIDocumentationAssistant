@@ -3,6 +3,10 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 
+const demoPassword = process.env.NEXT_PUBLIC_ENABLE_DEMO_CREDENTIAL_AUTOFILL === 'true'
+  ? process.env.NEXT_PUBLIC_DEMO_PASSWORD || ''
+  : '';
+
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -120,8 +124,9 @@ export default function Login() {
                 type="button"
                 onClick={() => {
                   setEmail('admin@healthcare.com');
-                  setPassword('password123');
+                  setPassword(demoPassword);
                 }}
+                disabled={!demoPassword}
                 className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-xs"
               >
                 Admin
@@ -130,8 +135,9 @@ export default function Login() {
                 type="button"
                 onClick={() => {
                   setEmail('dr.smith@healthcare.com');
-                  setPassword('password123');
+                  setPassword(demoPassword);
                 }}
+                disabled={!demoPassword}
                 className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-xs"
               >
                 Doctor
@@ -140,8 +146,9 @@ export default function Login() {
                 type="button"
                 onClick={() => {
                   setEmail('nurse.jones@healthcare.com');
-                  setPassword('password123');
+                  setPassword(demoPassword);
                 }}
+                disabled={!demoPassword}
                 className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-xs"
               >
                 Nurse
