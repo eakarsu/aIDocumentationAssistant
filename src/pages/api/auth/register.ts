@@ -9,7 +9,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    const { email, password, firstName, lastName, role, specialty, phone } = req.body;
+    const { email, password, role, specialty, phone } = req.body;
+    const suppliedName = String(req.body.name || req.body.full_name || '').trim();
+    const firstName = String(req.body.firstName || req.body.first_name || suppliedName.split(/\s+/)[0] || '').trim();
+    const lastName = String(req.body.lastName || req.body.last_name || suppliedName.split(/\s+/).slice(1).join(' ') || 'User').trim();
 
     if (!email || !password || !firstName || !lastName) {
       return res.status(400).json({ error: 'Email, password, first name, and last name are required' });

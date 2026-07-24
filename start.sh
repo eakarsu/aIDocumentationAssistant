@@ -1,7 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-app_port="${PORT:-3000}"
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ ! -f "$project_dir/.env" ]; then
+  echo "Missing .env" >&2
+  exit 1
+fi
+set -a
+. "$project_dir/.env"
+set +a
+
+backend_port="${BACKEND_PORT:-${PORT:-3000}}"
+frontend_port="${FRONTEND_PORT:-$((backend_port + 1))}"
+app_port="$frontend_port"
+export BACKEND_PORT="$backend_port" FRONTEND_PORT="$frontend_port"
+export NEXT_PUBLIC_APP_URL="http://127.0.0.1:${frontend_port}"
 
 if [ "${NODE_ENV:-}" = "test" ]; then
   export ENCRYPTION_KEY="${ENCRYPTION_KEY:-${MEMORY_ENCRYPTION_KEY_BASE64:-}}"
@@ -32,9 +45,20 @@ if [ ! -d node_modules ]; then
   exit 1
 fi
 
-echo "Starting AI Documentation Assistant on port ${app_port}; persistent state is unchanged."
+for assigned_port in "$backend_port" "$frontend_port"; do
+  if lsof -nP -iTCP:"$assigned_port" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "Assigned port $assigned_port is already occupied" >&2
+    exit 1
+  fi
+done
+
+echo "Starting AI Documentation Assistant API proxy on ${backend_port} and UI on ${frontend_port}; persistent state is unchanged."
 if [ "${NODE_ENV:-development}" = "production" ]; then
-  exec npm run start -- -H 127.0.0.1 -p "$app_port"
+  npm run start -- -H 127.0.0.1 -p "$frontend_port" & app_pid=$!
 else
-  exec npm run dev -- -H 127.0.0.1 -p "$app_port"
+  npm run dev -- -H 127.0.0.1 -p "$frontend_port" & app_pid=$!
 fi
+node "$project_dir/scripts/runtime-api-proxy.mjs" & proxy_pid=$!
+cleanup(){ trap - EXIT INT TERM; kill "$app_pid" "$proxy_pid" 2>/dev/null || true; wait "$app_pid" "$proxy_pid" 2>/dev/null || true; }
+trap cleanup EXIT INT TERM
+wait "$app_pid" "$proxy_pid"

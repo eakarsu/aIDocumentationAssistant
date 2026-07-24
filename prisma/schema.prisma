@@ -49,6 +49,7 @@ model User {
   governedToolJobs  GovernedToolJob[] @relation("GovernedToolJobRequester")
   aiRuns            AiRun[] @relation("AiRunRequester")
   humanApprovals    HumanApproval[] @relation("HumanApprovalReviewer")
+  runtimeAiResults  RuntimeAiResult[]
 
   // Auth features
   passwordResetTokens PasswordResetToken[]
@@ -71,6 +72,21 @@ model Session {
 
   @@index([token])
   @@index([userId])
+}
+
+model RuntimeAiResult {
+  id              String   @id @default(uuid())
+  userId          String
+  prompt          String   @db.Text
+  model           String
+  providerReceipt Json?
+  result          String   @db.Text
+  usage           Json
+  createdAt       DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }
 
 model PasswordResetToken {
