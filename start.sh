@@ -99,6 +99,10 @@ if [ ! -d node_modules ]; then
   exit 1
 fi
 
+if [ "${NODE_ENV:-development}" != production ] && [ "${ENABLE_DEMO_CREDENTIAL_AUTOFILL:-true}" = true ]; then
+  node "$project_dir/scripts/provision-demo-credentials.mjs"
+fi
+
 for assigned_port in "$backend_port" "$frontend_port"; do
   if lsof -nP -iTCP:"$assigned_port" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "Assigned port $assigned_port is already occupied" >&2
@@ -106,7 +110,7 @@ for assigned_port in "$backend_port" "$frontend_port"; do
   fi
 done
 
-echo "Starting AI Documentation Assistant API proxy on ${backend_port} and UI on ${frontend_port}; persistent state is unchanged."
+echo "Starting AI Documentation Assistant API proxy on ${backend_port} and UI on ${frontend_port}."
 if [ "${NODE_ENV:-development}" = "production" ]; then
   npm run start -- -H 127.0.0.1 -p "$frontend_port" & app_pid=$!
 else

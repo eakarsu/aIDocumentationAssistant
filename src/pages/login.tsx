@@ -3,9 +3,9 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 
-const demoPassword = process.env.NEXT_PUBLIC_ENABLE_DEMO_CREDENTIAL_AUTOFILL === 'true'
-  ? process.env.NEXT_PUBLIC_DEMO_PASSWORD || ''
-  : '';
+const demoEnabled = process.env.NEXT_PUBLIC_ENABLE_DEMO_CREDENTIAL_AUTOFILL === 'true';
+const demoEmail = demoEnabled ? process.env.NEXT_PUBLIC_DEMO_EMAIL || '' : '';
+const demoPassword = demoEnabled ? process.env.NEXT_PUBLIC_DEMO_PASSWORD || '' : '';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -100,6 +100,7 @@ export default function Login() {
 
           <button
             type="submit"
+            aria-label="Sign In"
             disabled={isLoading}
             className="w-full btn btn-primary flex items-center justify-center"
           >
@@ -123,13 +124,13 @@ export default function Login() {
               <button
                 type="button"
                 onClick={() => {
-                  setEmail('admin@healthcare.com');
+                  setEmail(demoEmail);
                   setPassword(demoPassword);
                 }}
-                disabled={!demoPassword}
+                disabled={!demoEmail || !demoPassword}
                 className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-xs"
               >
-                Admin
+                Auto Fill Demo Credentials
               </button>
               <button
                 type="button"
