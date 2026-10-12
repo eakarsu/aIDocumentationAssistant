@@ -2,6 +2,8 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import prisma from '@/lib/prisma';
 import { getCurrentUser, getTenantContext, createAuditLog } from '@/lib/auth';
 
+const { requestJobCancellation } = require('@/lib/governance/runtime.cjs');
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const user = await getCurrentUser(req);
   if (!user) return res.status(401).json({ error: 'Unauthorized' });
@@ -14,7 +16,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   });
   if (!job) return res.status(404).json({ error: 'Job not found' });
 
-  if (req.method === 'GET') return res.status(200).json({ job });
+  if (req.method === 'GET') return res.status(200).json({ job: job.aiRun?.gateDecision === 'BLOCK' ? { ...job, output: null, aiRun: { ...job.aiRun, output: undefined } } : job });
   if (req.method !== 'PATCH') {
     res.setHeader('Allow', 'GET, PATCH');
     return res.status(405).json({ error: 'Method not allowed' });
@@ -28,26 +30,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     if (action === 'CANCEL') {
-      if (['COMPLETED', 'APPROVED', 'REJECTED', 'FAILED', 'DEAD_LETTER', 'CANCELLED'].includes(job.status)) {
-        return res.status(409).json({ error: `Cannot cancel a ${job.status.toLowerCase()} job` });
-      }
-      const updated = await prisma.governedToolJob.update({
-        where: { id },
-        data: {
-          cancelRequestedAt: new Date(),
-          ...(['QUEUED', 'RETRY_WAIT', 'AWAITING_APPROVAL'].includes(job.status) ? { status: 'CANCELLED', completedAt: new Date() } : {}),
-        },
-      });
-      await createAuditLog(user.id, 'UPDATE', 'GovernedToolJob', id, { status: job.status }, { action, status: updated.status }, req);
+      const updated = await requestJobCancellation(prisma, { jobId: id, tenantId: tenant.tenantId, userId: user.id, role: tenant.role, ipAddress: req.socket?.remoteAddress || null, userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null });
       return res.status(200).json({ job: updated });
     }
 
     if (action === 'RETRY') {
       if (!['FAILED', 'DEAD_LETTER'].includes(job.status)) return res.status(409).json({ error: 'Only terminal failed jobs can be retried' });
-      const updated = await prisma.governedToolJob.update({
-        where: { id },
+      if (job.aiRun) return res.status(409).json({ error: 'This job retains evaluated AI evidence. Revise the request and create a new job.' });
+      const changed = await prisma.governedToolJob.updateMany({
+        where: { id, tenantId: tenant.tenantId, status: { in: ['FAILED', 'DEAD_LETTER'] } },
         data: { status: 'QUEUED', attempt: 0, availableAt: new Date(), error: undefined, cancelRequestedAt: null, completedAt: null, leaseOwner: null, leaseExpiresAt: null },
       });
+      if (changed.count !== 1) return res.status(409).json({ error: 'The job changed before it could be retried' });
+      const updated = await prisma.governedToolJob.findUniqueOrThrow({ where: { id } });
       await createAuditLog(user.id, 'UPDATE', 'GovernedToolJob', id, { status: job.status }, { action, status: updated.status }, req);
       return res.status(200).json({ job: updated });
     }
@@ -59,6 +54,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(422).json({ error: 'sourcesReviewed and outputSafe attestations are required' });
       }
       const updated = await prisma.$transaction(async (tx) => {
+        const current = await tx.governedToolJob.findUnique({ where: { id } });
+        if (current?.status !== 'AWAITING_APPROVAL' || current.cancelRequestedAt) throw Object.assign(new Error('The job changed before its approval decision'), { status: 409 });
         await tx.humanApproval.create({
           data: {
             tenantId: tenant.tenantId,
@@ -70,7 +67,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             decidedAt: new Date(),
           },
         });
-        return tx.governedToolJob.update({ where: { id }, data: { status: action === 'APPROVE' ? 'APPROVED' : 'REJECTED', completedAt: new Date() } });
+        const changed = await tx.governedToolJob.updateMany({ where: { id, tenantId: tenant.tenantId, status: 'AWAITING_APPROVAL', cancelRequestedAt: null }, data: { status: action === 'APPROVE' ? 'APPROVED' : 'REJECTED', completedAt: new Date() } });
+        if (changed.count !== 1) throw Object.assign(new Error('The job changed before its approval decision'), { status: 409 });
+        return tx.governedToolJob.findUniqueOrThrow({ where: { id } });
       });
       await createAuditLog(user.id, 'UPDATE', 'GovernedToolJob', id, { status: job.status }, { action, status: updated.status, outputDigest: job.aiRun.outputDigest }, req);
       return res.status(200).json({ job: updated });
@@ -78,6 +77,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     return res.status(400).json({ error: 'action must be CANCEL, RETRY, APPROVE, or REJECT' });
   } catch (error: any) {
-    return res.status(500).json({ error: 'JOB_UPDATE_FAILED', message: error?.message || 'Job update failed' });
+    return res.status(error?.status || 500).json({ error: error?.code || 'JOB_UPDATE_FAILED', message: error?.status ? error.message : 'Job update failed' });
   }
 }

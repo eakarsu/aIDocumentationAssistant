@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import Layout from '@/components/Layout';
+import AIResponseReport from '@/components/AIResponseReport';
 import { useAuth } from '@/contexts/AuthContext';
 
 type Repository = { id: string; name: string; fullName: string; lastSyncStatus: string; freshUntil?: string | null };
@@ -14,6 +15,7 @@ type Job = {
   traceId: string;
   error?: { message?: string } | null;
   createdAt: string;
+  output?: unknown;
   aiRun?: {
     gateDecision: string;
     qualityScore: number;
@@ -23,6 +25,24 @@ type Job = {
     citations: Array<{ sourceId: string; path: string; lineStart: number; lineEnd: number }>;
   } | null;
 };
+
+const JOB_PRESETS = [
+  {
+    label: 'API reference',
+    kind: 'GENERATE_API_REFERENCE',
+    task: 'Document the repository public API surface, request and response contracts, authentication requirements, error behavior, and one grounded usage example per operation. Use only fresh indexed sources from the selected authorized repository. Cite exact source paths and line ranges, distinguish observed behavior from inference, identify missing evidence, and require the existing human review before publishing. Do not invent interfaces, credentials, or repository facts.',
+  },
+  {
+    label: 'README update',
+    kind: 'UPDATE_README',
+    task: 'Prepare a README update covering prerequisites, installation, configuration, startup, verification, and operational limits that are proven by the repository. Use only fresh indexed sources from the selected authorized repository. Cite exact source paths and line ranges, distinguish observed behavior from inference, identify missing evidence, and require the existing human review before publishing. Do not invent commands, credentials, or repository facts.',
+  },
+  {
+    label: 'Consistency review',
+    kind: 'CONSISTENCY_REVIEW',
+    task: 'Review implementation and documentation for contradictory setup steps, stale references, mismatched API contracts, and unsupported claims. Use only fresh indexed sources from the selected authorized repository. Cite exact source paths and line ranges, distinguish observed behavior from inference, identify missing evidence, and require the existing human review before publishing. Do not invent interfaces, credentials, or repository facts.',
+  },
+] as const;
 
 export default function GovernanceJobs() {
   const { token, activeTenantId, memberships } = useAuth();
@@ -34,6 +54,7 @@ export default function GovernanceJobs() {
   const [reviewed, setReviewed] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [selectedJobId, setSelectedJobId] = useState<string|null>(null);
   const [error, setError] = useState('');
 
   const headers = useCallback(() => ({
@@ -108,6 +129,12 @@ export default function GovernanceJobs() {
     }
   };
 
+  const fill = (preset: typeof JOB_PRESETS[number]) => {
+    setKind(preset.kind);
+    setRepositoryId(current => repositories.some(repository => repository.id === current) ? current : repositories[0]?.id || '');
+    setTask(preset.task);
+  };
+  const selectedJob = jobs.find(job=>job.id===selectedJobId);
   const activeMembership = memberships.find((membership) => membership.tenantId === activeTenantId);
   const canReview = activeMembership && ['OWNER', 'ADMIN', 'REVIEWER'].includes(activeMembership.role);
 
@@ -122,16 +149,31 @@ export default function GovernanceJobs() {
         {error && <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
 
         <form onSubmit={createJob} className="grid gap-4 rounded-lg bg-white p-5 shadow md:grid-cols-2">
+          <div className="md:col-span-2 flex flex-wrap gap-2">
+            {JOB_PRESETS.map((preset) => (
+              <button
+                key={preset.kind}
+                type="button"
+                data-ai-preset={preset.kind}
+                disabled={submitting || repositories.length === 0}
+                className="rounded border px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => fill(preset)}
+              >
+                Fill all · {preset.label}
+              </button>
+            ))}
+          </div>
+          {!repositories.length&&<p className="md:col-span-2 text-sm text-amber-800">No accessible saved repository is available. Add and index a repository through its authorized source workflow.</p>}
           <label className="text-sm font-medium text-gray-700">
             Repository
-            <select className="mt-1 w-full rounded-md border border-gray-300 p-2" value={repositoryId} onChange={(event) => setRepositoryId(event.target.value)} required>
+            <select disabled={submitting} className="mt-1 w-full rounded-md border border-gray-300 p-2" value={repositoryId} onChange={(event) => setRepositoryId(event.target.value)} required>
               <option value="" disabled>Select a repository</option>
               {repositories.map((repository) => <option key={repository.id} value={repository.id}>{repository.fullName}</option>)}
             </select>
           </label>
           <label className="text-sm font-medium text-gray-700">
             Typed tool
-            <select className="mt-1 w-full rounded-md border border-gray-300 p-2" value={kind} onChange={(event) => setKind(event.target.value)}>
+            <select disabled={submitting} className="mt-1 w-full rounded-md border border-gray-300 p-2" value={kind} onChange={(event) => setKind(event.target.value)}>
               <option value="GENERATE_API_REFERENCE">Generate API reference</option>
               <option value="UPDATE_README">Update README</option>
               <option value="CONSISTENCY_REVIEW">Consistency review</option>
@@ -139,11 +181,11 @@ export default function GovernanceJobs() {
           </label>
           <label className="text-sm font-medium text-gray-700 md:col-span-2">
             Bounded task
-            <textarea className="mt-1 w-full rounded-md border border-gray-300 p-2" rows={3} maxLength={4000} value={task} onChange={(event) => setTask(event.target.value)} required />
+            <textarea disabled={submitting} className="mt-1 w-full rounded-md border border-gray-300 p-2" rows={3} maxLength={4000} value={task} onChange={(event) => setTask(event.target.value)} required />
           </label>
           <div className="md:col-span-2">
             <button className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50" disabled={submitting || !repositoryId}>
-              {submitting ? 'Queueing…' : 'Queue governed job'}
+              {submitting ? 'Queueing…' : 'Generate with OpenRouter'}
             </button>
           </div>
         </form>
@@ -159,7 +201,7 @@ export default function GovernanceJobs() {
             <article key={job.id} className="rounded-lg bg-white p-5 shadow">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <h3 className="font-semibold text-gray-900">{job.kind.replaceAll('_', ' ')}</h3>
+                  <h3 className="font-semibold text-gray-900"><button type="button" onClick={()=>setSelectedJobId(job.id)} className="text-left underline decoration-gray-300">{job.kind.replaceAll('_', ' ')}</button></h3>
                   <p className="mt-1 break-all font-mono text-xs text-gray-500">Trace {job.traceId}</p>
                 </div>
                 <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700">{job.status.replaceAll('_', ' ')}</span>
@@ -170,6 +212,7 @@ export default function GovernanceJobs() {
                 <div><dt className="text-gray-500">Quality / safety</dt><dd>{job.aiRun ? `${job.aiRun.qualityScore.toFixed(2)} / ${job.aiRun.safetyScore.toFixed(2)}` : '—'}</dd></div>
                 <div><dt className="text-gray-500">Cost / latency</dt><dd>{job.aiRun ? `${job.aiRun.costCents}¢ / ${job.aiRun.latencyMs} ms` : '—'}</dd></div>
               </dl>
+              {job.aiRun&&['FAILED','DEAD_LETTER'].includes(job.status)&&<p className="mt-3 text-sm text-gray-600">Evaluated evidence is retained. Revise the brief and create a new job to request another provider response.</p>}
               {job.error?.message && <p className="mt-3 rounded bg-red-50 p-2 text-sm text-red-700">{job.error.message}</p>}
               {job.aiRun?.citations?.length ? (
                 <details className="mt-3 text-sm">
@@ -179,11 +222,12 @@ export default function GovernanceJobs() {
                   </ul>
                 </details>
               ) : null}
+              {job.output !== undefined && <AIResponseReport value={job.output} title="Governed documentation draft"/>}
               <div className="mt-4 flex flex-wrap items-center gap-2">
                 {['QUEUED', 'RUNNING', 'RETRY_WAIT', 'AWAITING_APPROVAL'].includes(job.status) && (
                   <button className="rounded border border-gray-300 px-3 py-1.5 text-sm" onClick={() => void act(job, 'CANCEL')}>Cancel</button>
                 )}
-                {['FAILED', 'DEAD_LETTER'].includes(job.status) && (
+                {['FAILED', 'DEAD_LETTER'].includes(job.status) && !job.aiRun && (
                   <button className="rounded border border-gray-300 px-3 py-1.5 text-sm" onClick={() => void act(job, 'RETRY')}>Retry</button>
                 )}
                 {job.status === 'AWAITING_APPROVAL' && canReview && (
@@ -200,6 +244,7 @@ export default function GovernanceJobs() {
             </article>
           ))}
         </section>
+        {selectedJob&&<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><section role="dialog" aria-modal="true" aria-label="Saved documentation job" className="max-h-[85vh] w-full max-w-3xl overflow-auto rounded-xl bg-white p-6 shadow-xl"><header className="mb-4 flex justify-between gap-4"><h2 className="text-xl font-semibold">{selectedJob.kind.replaceAll('_',' ')}</h2><button type="button" className="rounded border px-3 py-2" onClick={()=>setSelectedJobId(null)}>Close</button></header><p>Status: {selectedJob.status.replaceAll('_',' ')} · Trace {selectedJob.traceId}</p><p className="mt-2 text-sm text-gray-600">Saved jobs and their evidence are retained for audit. Review and cancellation use the native authorized workflow below.</p>{selectedJob.error?.message&&<p role="alert">{selectedJob.error.message}</p>}{selectedJob.output!==undefined?<AIResponseReport value={selectedJob.output} title="Saved governed documentation draft"/>:<p className="mt-4">No reviewable generated output has been retained yet.</p>}{['QUEUED','RUNNING','RETRY_WAIT','AWAITING_APPROVAL'].includes(selectedJob.status)&&<button type="button" className="mt-4 rounded border px-3 py-2" onClick={()=>void act(selectedJob,'CANCEL')}>Cancel saved job</button>}</section></div>}
       </div>
     </Layout>
   );

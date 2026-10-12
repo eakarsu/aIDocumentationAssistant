@@ -1,8 +1,9 @@
+import {z} from 'zod';
+export class AiServiceError extends Error {constructor(message:string,public status:number){super(message);}}
 // OpenRouter API for AI features
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'anthropic/claude-3-5-sonnet-20241022';
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 export interface TranscriptionResult {
   text: string;
@@ -100,11 +101,17 @@ function extractJSON(content: string): string | null {
 
 export const parseAIJson = sharedParseAIJson;
 
-async function callOpenRouter(messages: { role: string; content: string }[], jsonResponse = true): Promise<string> {
+async function callOpenRouter(messages: { role: string; content: string }[], jsonResponse = true, signal?:AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  if(!process.env.OPENROUTER_API_KEY)throw new AiServiceError('OpenRouter is not configured.',503);
+  const controller=new AbortController(),cancel=()=>controller.abort(signal?.reason);
+  signal?.addEventListener('abort',cancel,{once:true});if(signal?.aborted)cancel();
+  const timeout=setTimeout(()=>controller.abort(new DOMException('AI provider timed out','TimeoutError')),45000);
+  try{
   const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
-    method: 'POST',
+    method: 'POST',signal:controller.signal,
     headers: {
-      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+      'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
       'Content-Type': 'application/json',
       'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
       'X-Title': 'AI Documentation Assistant',
@@ -118,12 +125,13 @@ async function callOpenRouter(messages: { role: string; content: string }[], jso
   });
 
   if (!response.ok) {
-    const error = await response.text();
-    console.error('OpenRouter API error:', error);
-    throw new Error('AI service request failed');
+    throw new AiServiceError(`OpenRouter could not complete this request (${response.status}).`,502);
   }
 
   const data = await response.json();
+  controller.signal.throwIfAborted();
+  const choice=data.choices?.[0];
+  if(data.error||choice?.message?.refusal||['length','content_filter'].includes(choice?.finish_reason))throw new AiServiceError('OpenRouter refused or did not complete the response.',502);
   const content = data.choices?.[0]?.message?.content || '';
 
   if (jsonResponse) {
@@ -148,19 +156,20 @@ async function callOpenRouter(messages: { role: string; content: string }[], jso
     }
   }
 
+  if(!content.trim())throw new AiServiceError('OpenRouter returned no answer.',502);
   return content;
+  }catch(error){if(signal?.aborted)throw new AiServiceError('AI request cancelled.',499);if(error instanceof AiServiceError)throw error;throw new AiServiceError('The AI provider failed or returned invalid output.',502);}
+  finally{clearTimeout(timeout);signal?.removeEventListener('abort',cancel);}
 }
 
-export async function transcribeAudio(audioBuffer: Buffer, mimeType: string): Promise<TranscriptionResult> {
+export async function transcribeAudio(audioBuffer: Buffer, mimeType: string, signal?:AbortSignal): Promise<TranscriptionResult> {
+  signal?.throwIfAborted();
   // Use OpenAI Whisper API for transcription
-  if (!OPENAI_API_KEY) {
-    console.log('No OPENAI_API_KEY configured - returning placeholder');
-    return {
-      text: 'Transcription requires OPENAI_API_KEY in .env file. Add: OPENAI_API_KEY=your-key-here',
-      medicalTerms: [],
-    };
+  if (!process.env.OPENAI_API_KEY) {
+    throw new AiServiceError('Audio transcription requires a configured transcription provider.',503);
   }
 
+  const controller=new AbortController(),cancel=()=>controller.abort(signal?.reason);signal?.addEventListener('abort',cancel,{once:true});if(signal?.aborted)cancel();const timer=setTimeout(()=>controller.abort(),60000);
   try {
     // Determine file extension from mime type
     const extensionMap: Record<string, string> = {
@@ -181,36 +190,34 @@ export async function transcribeAudio(audioBuffer: Buffer, mimeType: string): Pr
     formData.append('language', 'en');
 
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
+      method: 'POST',signal:controller.signal,
       headers: {
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: formData,
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      console.error('Whisper API error:', error);
-      throw new Error('Transcription failed');
+      throw new AiServiceError('The transcription provider could not complete the request.',502);
     }
 
     const data = await response.json();
-    const transcribedText = data.text || '';
+    controller.signal.throwIfAborted();const transcribedText = data.text;
+    if(typeof transcribedText!=='string'||!transcribedText.trim())throw new AiServiceError('The transcription provider returned no transcript.',502);
 
     // Extract medical terms from the transcription
-    const medicalTerms = await extractMedicalTerms(transcribedText);
+    const medicalTerms = await extractMedicalTerms(transcribedText,signal);
 
     return {
       text: transcribedText,
       medicalTerms,
     };
   } catch (error) {
-    console.error('Transcription error:', error);
-    throw new Error('Failed to transcribe audio');
-  }
+    if(signal?.aborted)throw new AiServiceError('AI request cancelled.',499);if(error instanceof AiServiceError)throw error;throw new AiServiceError('The transcription provider failed.',502);
+  }finally{clearTimeout(timer);signal?.removeEventListener('abort',cancel);}
 }
 
-export async function extractMedicalTerms(text: string): Promise<string[]> {
+export async function extractMedicalTerms(text: string,signal?:AbortSignal): Promise<string[]> {
   // Skip if no OpenRouter API key configured
   if (!OPENROUTER_API_KEY) {
     console.log('No OPENROUTER_API_KEY - skipping medical term extraction');
@@ -227,17 +234,18 @@ export async function extractMedicalTerms(text: string): Promise<string[]> {
         role: 'user',
         content: text,
       },
-    ]);
+    ],true,signal);
 
     const result = JSON.parse(response);
     return result.terms || [];
   } catch (error) {
-    console.error('Medical term extraction error:', error);
+    if(signal?.aborted)throw new AiServiceError('AI request cancelled.',499);
+    console.error('Medical term extraction failed');
     return [];
   }
 }
 
-export async function generateSummary(noteContent: object): Promise<SummaryResult> {
+export async function generateSummary(noteContent: object, signal?:AbortSignal): Promise<SummaryResult> {
   try {
     const response = await callOpenRouter([
       {
@@ -249,16 +257,15 @@ export async function generateSummary(noteContent: object): Promise<SummaryResul
         role: 'user',
         content: JSON.stringify(noteContent),
       },
-    ]);
+    ],true,signal);
 
-    return JSON.parse(response);
+    return z.object({summary:z.string().min(1).max(20000),keyPoints:z.array(z.string().max(3000)).max(50),followUps:z.array(z.string().max(3000)).max(50)}).parse(JSON.parse(response));
   } catch (error) {
-    console.error('Summary generation error:', error);
-    throw new Error('Failed to generate summary');
+    if(error instanceof AiServiceError)throw error;throw new AiServiceError('The provider returned an invalid summary.',502);
   }
 }
 
-export async function suggestMedicalCodes(noteContent: object): Promise<MedicalCodeSuggestion[]> {
+export async function suggestMedicalCodes(noteContent: object, signal?:AbortSignal): Promise<MedicalCodeSuggestion[]> {
   try {
     const response = await callOpenRouter([
       {
@@ -271,17 +278,16 @@ export async function suggestMedicalCodes(noteContent: object): Promise<MedicalC
         role: 'user',
         content: JSON.stringify(noteContent),
       },
-    ]);
+    ],true,signal);
 
-    const result = JSON.parse(response);
-    return result.codes || [];
+    const result = z.object({codes:z.array(z.object({code:z.string().min(1).max(100),codeType:z.enum(['CPT','ICD10']),description:z.string().min(1).max(3000),confidence:z.number().min(0).max(1)})).max(100)}).parse(JSON.parse(response));
+    return result.codes;
   } catch (error) {
-    console.error('Medical coding error:', error);
-    throw new Error('Failed to suggest medical codes');
+    if(error instanceof AiServiceError)throw error;throw new AiServiceError('The provider returned invalid unverified code suggestions.',502);
   }
 }
 
-export async function performQualityCheck(noteContent: object, noteType: string): Promise<QualityCheckResult> {
+export async function performQualityCheck(noteContent: object, noteType: string, signal?:AbortSignal): Promise<QualityCheckResult> {
   try {
     const response = await callOpenRouter([
       {
@@ -295,16 +301,15 @@ export async function performQualityCheck(noteContent: object, noteType: string)
         role: 'user',
         content: JSON.stringify(noteContent),
       },
-    ]);
+    ],true,signal);
 
-    return JSON.parse(response);
+    return z.object({score:z.number().min(0).max(100),issues:z.array(z.object({field:z.string().max(300),message:z.string().max(3000),severity:z.enum(['warning','error'])})).max(100),suggestions:z.array(z.string().max(3000)).max(100)}).parse(JSON.parse(response));
   } catch (error) {
-    console.error('Quality check error:', error);
-    throw new Error('Failed to perform quality check');
+    if(error instanceof AiServiceError)throw error;throw new AiServiceError('The provider returned an invalid documentation review.',502);
   }
 }
 
-export async function structureNote(transcription: string, templateSections: object[]): Promise<object> {
+export async function structureNote(transcription: string, templateSections: object[],signal?:AbortSignal): Promise<object> {
   try {
     const response = await callOpenRouter([
       {
@@ -317,12 +322,11 @@ export async function structureNote(transcription: string, templateSections: obj
         role: 'user',
         content: transcription,
       },
-    ]);
+    ],true,signal);
 
     return JSON.parse(response);
   } catch (error) {
-    console.error('Note structuring error:', error);
-    throw new Error('Failed to structure note');
+    if(error instanceof AiServiceError)throw error;throw new AiServiceError('The provider returned invalid structured note content.',502);
   }
 }
 

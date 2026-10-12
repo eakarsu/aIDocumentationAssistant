@@ -168,18 +168,18 @@ export const api = {
     }),
 
   // AI Features
-  summarizeNote: (id: string) =>
-    fetchApi(`/api/notes/${id}/ai/summarize`, { method: 'POST' }),
+  summarizeNote: (id: string,signal?:AbortSignal) =>
+    fetchApi(`/api/notes/${id}/ai/summarize`, { method: 'POST',signal }),
 
-  suggestCodes: (id: string) =>
-    fetchApi(`/api/notes/${id}/ai/codes`, { method: 'POST' }),
+  suggestCodes: (id: string,signal?:AbortSignal) =>
+    fetchApi(`/api/notes/${id}/ai/codes`, { method: 'POST',signal }),
 
-  qualityCheck: (id: string) =>
-    fetchApi(`/api/notes/${id}/ai/quality`, { method: 'POST' }),
+  qualityCheck: (id: string,signal?:AbortSignal) =>
+    fetchApi(`/api/notes/${id}/ai/quality`, { method: 'POST',signal }),
 
-  structureNote: (id: string, transcription: string) =>
+  structureNote: (id: string, transcription: string,signal?:AbortSignal) =>
     fetchApi(`/api/notes/${id}/ai/structure`, {
-      method: 'POST',
+      method: 'POST',signal,
       body: JSON.stringify({ transcription }),
     }),
 
@@ -221,8 +221,8 @@ export const api = {
   getRecordings: (params?: Record<string, string>) =>
     fetchApi(`/api/recordings?${new URLSearchParams(params || {})}`),
 
-  transcribeRecording: (id: string) =>
-    fetchApi(`/api/recordings/${id}/transcribe`, { method: 'POST' }),
+  transcribeRecording: (id: string,signal?:AbortSignal) =>
+    fetchApi(`/api/recordings/${id}/transcribe`, { method: 'POST',signal }),
 
   // Integrations
   getIntegrations: (params?: Record<string, string>) =>

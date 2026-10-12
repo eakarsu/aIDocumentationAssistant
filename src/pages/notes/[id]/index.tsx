@@ -1,9 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '@/components/Layout';
+import AIResponseReport, { reportText } from '@/components/AIResponseReport';
 import { useAuth } from '@/contexts/AuthContext';
 import api from '@/lib/api';
 import Link from 'next/link';
+
+const AI_ACTION_PRESETS = [
+  { value: 'summarize', label: 'Summary' },
+  { value: 'codes', label: 'Code suggestions' },
+  { value: 'quality', label: 'Documentation review' },
+] as const;
 
 export default function NoteDetailPage() {
   const { isAuthenticated, isLoading, user } = useAuth();
@@ -17,6 +24,10 @@ export default function NoteDetailPage() {
   const [showCosignModal, setShowCosignModal] = useState(false);
   const [showCommentModal, setShowCommentModal] = useState(false);
   const [newComment, setNewComment] = useState('');
+  const [aiAction,setAiAction]=useState('summarize');
+  const aiRequest=useRef<AbortController|null>(null);
+  const cancelAI=()=>{aiRequest.current?.abort();aiRequest.current=null;setAiLoading(null);setAiResult(null);};
+  useEffect(()=>()=>{aiRequest.current?.abort();aiRequest.current=null;},[id]);
   const [aiResult, setAiResult] = useState<{ type: string; data: any } | null>(null);
 
   useEffect(() => {
@@ -103,27 +114,28 @@ export default function NoteDetailPage() {
   };
 
   const handleAIAction = async (action: string) => {
+    if(aiRequest.current)return;const controller=new AbortController();aiRequest.current=controller;
     setAiLoading(action);
     try {
       switch (action) {
         case 'summarize':
-          const summary = await api.summarizeNote(id as string);
-          setAiResult({ type: 'summary', data: summary });
+          const summary = await api.summarizeNote(id as string,controller.signal);
+          if(controller.signal.aborted)return;setAiResult({ type: 'summary', data: summary });
           break;
         case 'codes':
-          const codes = await api.suggestCodes(id as string);
-          setAiResult({ type: 'codes', data: codes });
+          const codes = await api.suggestCodes(id as string,controller.signal);
+          if(controller.signal.aborted)return;setAiResult({ type: 'codes', data: codes });
           break;
         case 'quality':
-          const quality = await api.qualityCheck(id as string);
-          setAiResult({ type: 'quality', data: quality });
+          const quality = await api.qualityCheck(id as string,controller.signal);
+          if(controller.signal.aborted)return;setAiResult({ type: 'quality', data: quality });
           break;
       }
       loadNote();
     } catch (error: any) {
-      setAiResult({ type: 'error', data: { message: error.message || 'AI action failed' } });
+      if(!controller.signal.aborted)setAiResult({ type: 'error', data: { message: error.message || 'AI action failed' } });
     } finally {
-      setAiLoading(null);
+      if(aiRequest.current===controller){aiRequest.current=null;setAiLoading(null);}
     }
   };
 
@@ -151,6 +163,16 @@ export default function NoteDetailPage() {
 
   const templateSections = note.template?.sections || [];
   const content = note.content || {};
+  const legacyAiResults = {
+    ...(note.aiSummary || note.aiFollowUps ? { summary: { summary: note.aiSummary, followUps: note.aiFollowUps || [] } } : {}),
+    ...(Array.isArray(note.aiCodes) && note.aiCodes.length ? { codes: { codes: note.aiCodes } } : {}),
+    ...(typeof note.aiQualityScore === 'number' ? { quality: { score: note.aiQualityScore } } : {}),
+  };
+  const savedAiResults = {
+    ...legacyAiResults,
+    ...(note.aiResults && typeof note.aiResults === 'object' && !Array.isArray(note.aiResults) ? note.aiResults : {}),
+  };
+  const hasSavedAiResults = Object.keys(savedAiResults).length > 0;
 
   return (
     <Layout>
@@ -239,15 +261,9 @@ export default function NoteDetailPage() {
             )}
           </div>
 
-          {/* AI Summary */}
-          {note.aiSummary && (
-            <div className="card bg-blue-50">
-              <h2 className="text-lg font-semibold mb-2 flex items-center">
-                <span className="mr-2">AI Summary</span>
-                <span className="badge badge-blue text-xs">AI Generated</span>
-              </h2>
-              <p className="text-gray-700">{note.aiSummary}</p>
-            </div>
+          {/* Saved AI Results */}
+          {hasSavedAiResults && (
+            <AIResponseReport value={savedAiResults} title="Saved note AI results" />
           )}
 
           {/* Comments */}
@@ -312,31 +328,30 @@ export default function NoteDetailPage() {
           {/* AI Actions */}
           <div className="card">
             <h2 className="text-lg font-semibold mb-4">AI Features</h2>
-            <div className="space-y-2">
-              <button
-                onClick={() => handleAIAction('summarize')}
-                disabled={aiLoading !== null}
-                className="btn btn-outline w-full justify-start"
-              >
-                {aiLoading === 'summarize' ? <div className="spinner mr-2"></div> : null}
-                Generate Summary
-              </button>
-              <button
-                onClick={() => handleAIAction('codes')}
-                disabled={aiLoading !== null}
-                className="btn btn-outline w-full justify-start"
-              >
-                {aiLoading === 'codes' ? <div className="spinner mr-2"></div> : null}
-                Suggest Medical Codes
-              </button>
-              <button
-                onClick={() => handleAIAction('quality')}
-                disabled={aiLoading !== null}
-                className="btn btn-outline w-full justify-start"
-              >
-                {aiLoading === 'quality' ? <div className="spinner mr-2"></div> : null}
-                Quality Check
-              </button>
+            <div className="space-y-3">
+              <p className="text-sm text-gray-600">AI uses this actual saved note. Suggestions remain unverified and do not sign the note or approve billing.</p>
+              <div className="flex flex-wrap gap-2">
+                {AI_ACTION_PRESETS.map((preset) => (
+                  <button
+                    key={preset.value}
+                    type="button"
+                    data-ai-preset={preset.value}
+                    disabled={aiLoading !== null}
+                    className="btn btn-outline"
+                    onClick={() => setAiAction(preset.value)}
+                  >
+                    Fill all · {preset.label}
+                  </button>
+                ))}
+              </div>
+              <label className="block text-sm">
+                Saved-note AI feature
+                <select disabled={aiLoading !== null} value={aiAction} onChange={event => setAiAction(event.target.value)} className="mt-2 w-full rounded border p-2">
+                  {AI_ACTION_PRESETS.map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}
+                </select>
+              </label>
+              <button type="button" onClick={()=>handleAIAction(aiAction)} disabled={aiLoading!==null} className="btn btn-outline w-full">{aiLoading?'Generating…':'Generate with OpenRouter'}</button>
+              {aiLoading&&<button type="button" onClick={cancelAI} className="btn btn-outline w-full">Cancel request</button>}
             </div>
           </div>
 
@@ -488,7 +503,7 @@ export default function NoteDetailPage() {
       {/* AI Result Modal */}
       {aiResult && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-hidden">
+          <div role="dialog" aria-modal="true" aria-label="Saved note AI response" className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-hidden">
             {/* Header */}
             <div className={`px-6 py-4 ${
               aiResult.type === 'error' ? 'bg-red-500' :
@@ -558,7 +573,7 @@ export default function NoteDetailPage() {
                   <div>
                     <h4 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Summary</h4>
                     <p className="text-gray-800 text-lg leading-relaxed bg-blue-50 p-4 rounded-lg">
-                      {aiResult.data.summary}
+                      {reportText(aiResult.data.summary)}
                     </p>
                   </div>
                   {aiResult.data.keyPoints?.length > 0 && (
@@ -570,7 +585,7 @@ export default function NoteDetailPage() {
                             <span className="flex-shrink-0 w-6 h-6 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-sm font-medium mr-3">
                               {idx + 1}
                             </span>
-                            <span className="text-gray-700">{point}</span>
+                            <span className="text-gray-700">{reportText(point)}</span>
                           </li>
                         ))}
                       </ul>
@@ -585,7 +600,7 @@ export default function NoteDetailPage() {
                             <svg className="w-5 h-5 text-blue-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                             </svg>
-                            {item}
+                            {reportText(item)}
                           </li>
                         ))}
                       </ul>
@@ -624,7 +639,7 @@ export default function NoteDetailPage() {
                             </div>
                           )}
                         </div>
-                        <p className="mt-2 text-gray-600">{code.description}</p>
+                        <p className="mt-2 text-gray-600">{reportText(code.description)}</p>
                       </div>
                     ))
                   ) : (
@@ -680,7 +695,7 @@ export default function NoteDetailPage() {
                               <span className="text-gray-500">•</span>
                               <span className="font-medium text-gray-800">{issue.field}</span>
                             </div>
-                            <p className="mt-1 text-gray-600">{issue.message}</p>
+                            <p className="mt-1 text-gray-600">{reportText(issue.message)}</p>
                           </div>
                         ))}
                       </div>
@@ -697,7 +712,7 @@ export default function NoteDetailPage() {
                             <svg className="w-5 h-5 text-purple-500 mr-2 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                             </svg>
-                            {suggestion}
+                            {reportText(suggestion)}
                           </li>
                         ))}
                       </ul>

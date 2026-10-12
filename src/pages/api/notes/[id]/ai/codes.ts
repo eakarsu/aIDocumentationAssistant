@@ -1,3 +1,4 @@
+import {withAiRequest,aiFailureStatus} from '@/lib/ai-request';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import prisma from '@/lib/prisma';
 import { getCurrentUser, createAuditLog } from '@/lib/auth';
@@ -44,18 +45,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const note = await prisma.note.findUnique({
       where: { id: id as string },
+      include:{coSignatures:{select:{signerId:true}}},
     });
 
     if (!note) {
       return res.status(404).json({ error: 'Note not found' });
     }
+    if(user.role!=='ADMIN'&&note.authorId!==user.id&&!note.coSignatures.some(signature=>signature.signerId===user.id))return res.status(403).json({error:'Access denied'});
+    await withAiRequest(req,res,async signal=>{
 
-    const codes = await suggestMedicalCodes(note.content as object);
+    const codes = await suggestMedicalCodes(note.content as object,signal);
 
     // Store suggested codes with normalized code types
-    for (const code of codes) {
+    await prisma.$transaction(async tx=>{signal.throwIfAborted();for (const code of codes) {
       const normalizedCodeType = normalizeCodeType(code.codeType);
-      await prisma.medicalCode.create({
+      await tx.medicalCode.create({
         data: {
           noteId: id as string,
           codeType: normalizedCodeType,
@@ -68,18 +72,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     // Update note with AI codes
-    await prisma.note.update({
+    await tx.note.update({
       where: { id: id as string },
       data: {
         aiCodes: codes as any,
+        aiResults: {
+          ...(note.aiResults && typeof note.aiResults === 'object' && !Array.isArray(note.aiResults) ? note.aiResults : {}),
+          codes: { codes },
+        } as any,
       },
+    });signal.throwIfAborted();});
+
+    signal.throwIfAborted();await createAuditLog(user.id, 'UPDATE', 'Note', id as string, null, { aiAction: 'coding' }, req);
+
+    signal.throwIfAborted();res.status(200).json({ codes });
     });
-
-    await createAuditLog(user.id, 'UPDATE', 'Note', id as string, null, { aiAction: 'coding' }, req);
-
-    res.status(200).json({ codes });
   } catch (error) {
-    console.error('AI coding error:', error);
-    res.status(500).json({ error: 'Failed to suggest medical codes' });
+    if(!res.destroyed&&!res.writableEnded)res.status(aiFailureStatus(error)).json({error:error instanceof Error?error.message:'AI provider failed'});
   }
 }

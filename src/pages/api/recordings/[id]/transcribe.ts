@@ -1,3 +1,4 @@
+import {withAiRequest,aiFailureStatus} from '@/lib/ai-request';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import prisma from '@/lib/prisma';
 import { getCurrentUser, createAuditLog } from '@/lib/auth';
@@ -35,6 +36,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(403).json({ error: 'Forbidden' });
     }
 
+    const linkedNote=recording.noteId?await prisma.note.findUnique({where:{id:recording.noteId}}):null;
+    if(linkedNote&&user.role!=='ADMIN'&&linkedNote.authorId!==user.id)return res.status(403).json({error:'Only the note author or administrator can attach a transcription'});
+    if(linkedNote&&linkedNote.status!=='DRAFT')return res.status(409).json({error:'A transcription can only be attached to an unsigned draft'});
+    if(recording.status==='TRANSCRIBING')return res.status(409).json({error:'This recording is already being transcribed'});
+
     // Check if file exists
     if (!fs.existsSync(recording.filePath)) {
       return res.status(400).json({
@@ -43,6 +49,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
+    await withAiRequest(req,res,async signal=>{
     // Update status
     await prisma.recording.update({
       where: { id: id as string },
@@ -51,10 +58,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // Read file and transcribe
     const audioBuffer = fs.readFileSync(recording.filePath);
-    const result = await transcribeAudio(audioBuffer, recording.mimeType);
+    const result = await transcribeAudio(audioBuffer, recording.mimeType,signal);
 
     // Update recording with transcription
-    const updatedRecording = await prisma.recording.update({
+    await prisma.$transaction(async tx=>{signal.throwIfAborted();await tx.recording.update({
       where: { id: id as string },
       data: {
         status: 'COMPLETED',
@@ -65,30 +72,31 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
 
     // If linked to a note, update the note with transcription
-    if (recording.noteId) {
-      await prisma.note.update({
-        where: { id: recording.noteId },
+    if (linkedNote) {
+      const saved=await tx.note.updateMany({
+        where: { id: linkedNote.id, status:'DRAFT',updatedAt:linkedNote.updatedAt },
         data: {
           aiTranscription: result.text,
         },
       });
+      if(saved.count!==1)throw Object.assign(new Error('The draft changed during transcription. Review it before attaching the transcript.'),{status:409});
     }
 
-    await createAuditLog(user.id, 'UPDATE', 'Recording', id as string, null, { action: 'transcribe' }, req);
+    signal.throwIfAborted();});
+    signal.throwIfAborted();await createAuditLog(user.id, 'UPDATE', 'Recording', id as string, null, { action: 'transcribe' }, req);
 
-    res.status(200).json({
+    signal.throwIfAborted();res.status(200).json({
       transcription: result.text,
       medicalTerms: result.medicalTerms,
     });
+    });
   } catch (error) {
-    console.error('Transcribe error:', error);
-
     // Update status to failed
     await prisma.recording.update({
       where: { id: id as string },
       data: { status: 'FAILED' },
     });
 
-    res.status(500).json({ error: 'Failed to transcribe recording' });
+    if(!res.destroyed&&!res.writableEnded)res.status(aiFailureStatus(error)).json({ error: error instanceof Error ? error.message : 'Failed to transcribe recording' });
   }
 }

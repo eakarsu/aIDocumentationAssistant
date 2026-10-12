@@ -17,7 +17,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         where: { tenantId: tenant.tenantId },
         select: {
           id: true, repositoryId: true, requestedById: true, kind: true, status: true, attempt: true, maxAttempts: true,
-          error: true, traceId: true, availableAt: true, startedAt: true, completedAt: true, createdAt: true, updatedAt: true,
+          output: true, error: true, traceId: true, availableAt: true, startedAt: true, completedAt: true, createdAt: true, updatedAt: true,
           aiRun: { select: { id: true, gateDecision: true, qualityScore: true, safetyScore: true, costCents: true, latencyMs: true, citations: true, createdAt: true, approval: true } },
         },
         orderBy: { createdAt: 'desc' },

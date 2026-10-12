@@ -127,7 +127,8 @@ test('claim uses a bounded PostgreSQL lease and increments attempts', async () =
 test('retryable connector failure schedules retry and reconciles sync status', async () => {
   const calls = { job: null, repository: null, sync: null };
   const tx = {
-    governedToolJob: { update: async ({ data }) => { calls.job = data; return data; } },
+    $queryRawUnsafe: async () => [],
+    governedToolJob: { findUnique: async () => ({tenantId:'tenant-1',status:'RUNNING'}), update: async ({ data }) => { calls.job = data; return data; } },
     auditLog: { create: async () => ({}) },
     repository: { update: async ({ data }) => { calls.repository = data; return data; } },
     connectorSyncRun: { updateMany: async ({ data }) => { calls.sync = data; return { count: 1 }; } },
@@ -141,8 +142,10 @@ test('retryable connector failure schedules retry and reconciles sync status', a
 
 test('claimed cancellation completes without invoking a tool', async () => {
   let update;
-  const prisma = { governedToolJob: { update: async (value) => { update = value; return value.data; } } };
-  const result = await executeClaimedJob(prisma, { id: 'job-1', cancelRequestedAt: new Date() });
+  const job = { id: 'job-1', tenantId: 'tenant-1', requestedById:'user-1', traceId:'trace-1', cancelRequestedAt: new Date() };
+  const tx = { $queryRawUnsafe: async () => [], governedToolJob: { findUnique: async () => ({...job,status:'RUNNING'}), update: async (value) => { update = value; return value.data; } }, auditLog: {create:async()=>({})} };
+  const prisma = { $transaction: async callback => callback(tx) };
+  const result = await executeClaimedJob(prisma, job);
   assert.equal(result.status, 'CANCELLED');
   assert.equal(update.data.leaseOwner, null);
 });

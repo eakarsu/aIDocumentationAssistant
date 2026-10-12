@@ -9,7 +9,6 @@ const {
   buildGroundedEnvelope,
   reconcileConnectorSnapshot,
   evaluateOutput,
-  runWithTimeout,
 } = require('./core.cjs');
 
 function getCredentialKey() {
@@ -37,6 +36,56 @@ function traceId() {
 
 function tenantPrincipals(tenantId, userId, role) {
   return [`tenant:${tenantId}`, `user:${userId}`, `role:${String(role).toLowerCase()}`];
+}
+
+const terminalStatuses = new Set(['COMPLETED', 'APPROVED', 'REJECTED', 'FAILED', 'DEAD_LETTER', 'CANCELLED']);
+const cancelledError = () => new DomainError('JOB_CANCELLED', 'job cancellation was requested', 409);
+
+async function requestJobCancellation(prisma, { jobId, tenantId, userId, role, ipAddress = null, userAgent = null }) {
+  return prisma.$transaction(async tx => {
+    await tx.$queryRawUnsafe('SELECT "id" FROM "GovernedToolJob" WHERE "id" = $1 AND "tenantId" = $2 FOR NO KEY UPDATE', jobId, tenantId);
+    const current = await tx.governedToolJob.findFirst({ where: { id: jobId, tenantId } });
+    if (!current) throw new DomainError('NOT_FOUND', 'job not found in this tenant', 404);
+    if (!['OWNER', 'ADMIN'].includes(role) && current.requestedById !== userId) throw new DomainError('FORBIDDEN', 'only the requester or a tenant administrator may cancel this job', 403);
+    if (terminalStatuses.has(current.status)) throw new DomainError('JOB_CONFLICT', `cannot cancel a ${current.status.toLowerCase()} job`, 409);
+    const updated = await tx.governedToolJob.update({ where: { id: current.id }, data: { cancelRequestedAt: new Date(), status: 'CANCELLED', completedAt: new Date(), leaseOwner: null, leaseExpiresAt: null } });
+    await tx.auditLog.create({ data: { userId, action: 'UPDATE', entityType: 'GovernedToolJob', entityId: current.id, oldValues: { status: current.status }, newValues: { action: 'CANCEL', status: updated.status, traceId: current.traceId }, ipAddress, userAgent } });
+    return updated;
+  });
+}
+
+function jobExecution(prisma, job) {
+  const controller = new AbortController();
+  let polling = false;
+  async function check(client = prisma) {
+    controller.signal.throwIfAborted();
+    const current = await client.governedToolJob.findUnique({ where: { id: job.id } });
+    if (!current || current.tenantId !== job.tenantId || current.status !== 'RUNNING' || current.leaseOwner !== job.leaseOwner) {
+      if (current?.cancelRequestedAt || current?.status === 'CANCELLED') throw cancelledError();
+      throw new DomainError('JOB_LEASE_LOST', 'this worker no longer owns the job lease', 409);
+    }
+    if (current.cancelRequestedAt) throw cancelledError();
+    if (current.leaseExpiresAt && new Date(current.leaseExpiresAt).getTime() <= Date.now()) throw new DomainError('JOB_LEASE_LOST', 'job lease expired before completion', 409);
+    controller.signal.throwIfAborted();
+    return current;
+  }
+  const timer = setTimeout(() => controller.abort(new DomainError('TOOL_TIMEOUT', 'job exceeded its execution timeout', 504, true)), job.timeoutMs);
+  const poll = setInterval(async () => {
+    if (polling || controller.signal.aborted) return;
+    polling = true;
+    try { await check(); }
+    catch (error) { controller.abort(error?.code ? error : new DomainError('JOB_STATE_UNAVAILABLE', 'could not verify the active job lease', 503, true)); }
+    finally { polling = false; }
+  }, 250);
+  timer.unref?.(); poll.unref?.();
+  async function finish(tx, data) {
+    await check(tx);
+    const changed = await tx.governedToolJob.updateMany({ where: { id: job.id, tenantId: job.tenantId, status: 'RUNNING', leaseOwner: job.leaseOwner, cancelRequestedAt: null }, data });
+    if (changed.count !== 1) { await check(tx); throw new DomainError('JOB_LEASE_LOST', 'job changed before its result could be committed', 409); }
+    controller.signal.throwIfAborted();
+    return tx.governedToolJob.findUnique({ where: { id: job.id } });
+  }
+  return { signal: controller.signal, check, finish, stop: () => { clearTimeout(timer); clearInterval(poll); } };
 }
 
 async function enqueueJob(prisma, { tenantId, tenantRole, userId, body }) {
@@ -126,6 +175,22 @@ async function failJob(prisma, job, error) {
   const status = retryable ? 'RETRY_WAIT' : Boolean(error?.retryable) ? 'DEAD_LETTER' : 'FAILED';
   const delay = Math.min(60_000, 1_000 * 2 ** Math.max(0, job.attempt - 1));
   return prisma.$transaction(async (tx) => {
+    await tx.$queryRawUnsafe('SELECT "id" FROM "GovernedToolJob" WHERE "id" = $1 FOR UPDATE', job.id);
+    const current = await tx.governedToolJob.findUnique({ where: { id: job.id } });
+    if (!current || current.tenantId !== job.tenantId) return current;
+    if (current.cancelRequestedAt || current.status === 'CANCELLED' || error?.code === 'JOB_CANCELLED') {
+      if (current.status !== 'CANCELLED' && current.leaseOwner !== job.leaseOwner) return current;
+      if (job.kind === 'REPOSITORY_SYNC' && job.repositoryId && job.syncRunId) {
+        await tx.connectorSyncRun.updateMany({ where: { id: job.syncRunId, repositoryId: job.repositoryId, status: 'RUNNING' }, data: { status: 'CANCELLED', completedAt: new Date() } });
+        const otherRunning = await tx.governedToolJob.count({ where: { repositoryId: job.repositoryId, kind: 'REPOSITORY_SYNC', status: 'RUNNING', id: { not: job.id } } });
+        if (!otherRunning) await tx.repository.update({ where: { id: job.repositoryId }, data: { lastSyncStatus: 'CANCELLED', lastSyncError: null } });
+      }
+      if (current.status === 'CANCELLED') return current;
+      const updated = await tx.governedToolJob.update({ where: { id: job.id }, data: { status: 'CANCELLED', leaseOwner: null, leaseExpiresAt: null, completedAt: new Date() } });
+      await tx.auditLog.create({ data: { userId: job.requestedById, action: 'UPDATE', entityType: 'GovernedToolJob', entityId: job.id, newValues: { status: 'CANCELLED', traceId: job.traceId } } });
+      return updated;
+    }
+    if (terminalStatuses.has(current.status) || current.leaseOwner !== job.leaseOwner) return current;
     const updated = await tx.governedToolJob.update({
       where: { id: job.id },
       data: {
@@ -166,7 +231,9 @@ function quickParse(source) {
   return { functions, classes, interfaces, imports, exports, comments: [] };
 }
 
-async function executeRepositorySync(prisma, job) {
+async function executeRepositorySync(prisma, job, execution) {
+  if (!execution) { const owned = jobExecution(prisma, job); try { await owned.check(); return await executeRepositorySync(prisma, job, owned); } finally { owned.stop(); } }
+  await execution.check();
   const repository = await prisma.repository.findFirst({ where: { id: job.repositoryId, tenantId: job.tenantId } });
   if (!repository) throw new DomainError('NOT_FOUND', 'repository disappeared before sync', 404);
   if (repository.provider !== 'GITHUB') throw new DomainError('UNSUPPORTED_CONNECTOR', 'only the GitHub connector is registered', 422);
@@ -175,8 +242,10 @@ async function executeRepositorySync(prisma, job) {
   const [owner, repo, extra] = repository.fullName.split('/');
   if (!owner || !repo || extra) throw new DomainError('INVALID_REPOSITORY', 'repository fullName must be owner/repo');
   const run = await prisma.connectorSyncRun.create({ data: { repositoryId: repository.id, status: 'RUNNING', startedAt: new Date() } });
+  execution.syncRunId = run.id;
   await prisma.repository.update({ where: { id: repository.id }, data: { lastSyncStatus: 'RUNNING', lastSyncError: null } });
   const githubRequest = async (path) => {
+    await execution.check();
     const response = await fetch(`https://api.github.com${path}`, {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -184,24 +253,26 @@ async function executeRepositorySync(prisma, job) {
         'X-GitHub-Api-Version': '2022-11-28',
         'User-Agent': 'ai-documentation-assistant',
       },
-      signal: AbortSignal.timeout(job.timeoutMs),
+      signal: execution.signal,
     });
     if (!response.ok) {
       const retryable = response.status === 429 || response.status >= 500;
       throw new DomainError('CONNECTOR_ERROR', `GitHub returned ${response.status}`, 502, retryable);
     }
-    return response.json();
+    const body = await response.json();await execution.check();return body;
   };
   const encodedOwner = encodeURIComponent(owner);
   const encodedRepo = encodeURIComponent(repo);
   const branch = await githubRequest(`/repos/${encodedOwner}/${encodedRepo}/branches/${encodeURIComponent(repository.branch || 'main')}`);
   const commitSha = branch.commit.sha;
   if (commitSha === repository.lastCommitSha && repository.lastSyncStatus === 'COMPLETED') {
-    await prisma.$transaction([
-      prisma.connectorSyncRun.update({ where: { id: run.id }, data: { status: 'COMPLETED', sourceRevision: commitSha, cursor: commitSha, completedAt: new Date() } }),
-      prisma.repository.update({ where: { id: repository.id }, data: { lastSyncStatus: 'COMPLETED', lastSyncError: null, lastSyncAt: new Date(), freshUntil: new Date(Date.now() + 24 * 60 * 60 * 1000) } }),
-    ]);
-    return { syncRunId: run.id, unchangedRevision: true, commitSha, filesSeen: 0, filesChanged: 0, filesDeleted: 0 };
+    const output = { syncRunId: run.id, unchangedRevision: true, commitSha, filesSeen: 0, filesChanged: 0, filesDeleted: 0 };
+    return prisma.$transaction(async tx => {
+      await execution.check(tx);
+      await tx.connectorSyncRun.update({ where: { id: run.id }, data: { status: 'COMPLETED', sourceRevision: commitSha, cursor: commitSha, completedAt: new Date() } });
+      await tx.repository.update({ where: { id: repository.id }, data: { lastSyncStatus: 'COMPLETED', lastSyncError: null, lastSyncAt: new Date(), freshUntil: new Date(Date.now() + 24 * 60 * 60 * 1000) } });
+      return execution.finish(tx, { status: 'COMPLETED', output, leaseOwner: null, leaseExpiresAt: null, completedAt: new Date() });
+    });
   }
   const tree = await githubRequest(`/repos/${encodedOwner}/${encodedRepo}/git/trees/${encodeURIComponent(commitSha)}?recursive=1`);
   if (tree.truncated) throw new DomainError('CONNECTOR_LIMIT', 'repository tree is truncated; narrow syncPaths', 422);
@@ -215,6 +286,7 @@ async function executeRepositorySync(prisma, job) {
   const allowedPrincipals = Array.isArray(policy.readPrincipals) && policy.readPrincipals.length ? policy.readPrincipals : [`tenant:${job.tenantId}`];
   const snapshot = [];
   for (const node of candidates) {
+    await execution.check();
     const encodedPath = node.path.split('/').map(encodeURIComponent).join('/');
     const response = await githubRequest(`/repos/${encodedOwner}/${encodedRepo}/contents/${encodedPath}?ref=${encodeURIComponent(commitSha)}`);
     if (Array.isArray(response) || response.type !== 'file' || response.encoding !== 'base64' || !response.content) continue;
@@ -236,7 +308,9 @@ async function executeRepositorySync(prisma, job) {
     allowedPrincipals: Array.isArray(item.permissions) ? item.permissions : [],
     deletedAt: item.deletedAt,
   })), snapshot, { syncId: run.id, tenantId: job.tenantId, repositoryId: repository.id, commitSha, now: new Date() });
-  await prisma.$transaction(async (tx) => {
+  const output = { syncRunId: run.id, commitSha, filesSeen: snapshot.length, filesChanged: reconciliation.upserts.length, filesDeleted: reconciliation.deletions.length };
+  return prisma.$transaction(async (tx) => {
+    await execution.check(tx);
     for (const item of [...reconciliation.upserts, ...reconciliation.unchanged]) {
       const parsed = quickParse(item.content);
       await tx.parsedCodeFile.upsert({
@@ -254,6 +328,7 @@ async function executeRepositorySync(prisma, job) {
           sourceUrl: item.sourceUrl, permissions: item.allowedPrincipals, lastSeenSyncId: run.id,
         },
       });
+      await execution.check(tx);
     }
     if (reconciliation.deletions.length) {
       await tx.parsedCodeFile.updateMany({
@@ -269,11 +344,12 @@ async function executeRepositorySync(prisma, job) {
       where: { id: repository.id },
       data: { lastCommitSha: commitSha, syncCursor: reconciliation.cursor, lastSyncAt: new Date(), freshUntil: new Date(Date.now() + 24 * 60 * 60 * 1000), lastSyncStatus: 'COMPLETED', lastSyncError: null },
     });
+    return execution.finish(tx, { status: 'COMPLETED', output, leaseOwner: null, leaseExpiresAt: null, completedAt: new Date() });
   });
-  return { syncRunId: run.id, commitSha, filesSeen: snapshot.length, filesChanged: reconciliation.upserts.length, filesDeleted: reconciliation.deletions.length };
 }
 
-async function callDocumentationProvider(envelope, job) {
+async function callDocumentationProvider(envelope, job, signal) {
+  signal.throwIfAborted();
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) throw new DomainError('CONFIGURATION_ERROR', 'OPENROUTER_API_KEY is not configured', 503);
   const model = process.env.OPENROUTER_MODEL || 'anthropic/claude-3-5-sonnet-20241022';
@@ -290,7 +366,7 @@ async function callDocumentationProvider(envelope, job) {
         { role: 'user', content: JSON.stringify(envelope) },
       ],
     }),
-    signal: AbortSignal.timeout(job.timeoutMs),
+    signal,
   });
   const latencyMs = Date.now() - started;
   if (!response.ok) {
@@ -298,6 +374,8 @@ async function callDocumentationProvider(envelope, job) {
     throw new DomainError('PROVIDER_ERROR', `documentation provider returned ${response.status}`, 502, retryable);
   }
   const payload = await response.json();
+  signal.throwIfAborted();
+  if (payload.choices?.[0]?.message?.refusal || payload.choices?.[0]?.finish_reason === 'length') throw new DomainError('INVALID_PROVIDER_OUTPUT', 'provider did not return a complete documentation answer', 502);
   const content = payload.choices?.[0]?.message?.content;
   if (typeof content !== 'string') throw new DomainError('INVALID_PROVIDER_OUTPUT', 'provider response omitted content', 502);
   let output;
@@ -309,16 +387,18 @@ async function callDocumentationProvider(envelope, job) {
   const costCents = Math.ceil((inputTokens * inputRate + outputTokens * outputRate) / 1_000_000);
   return {
     output,
-    model,
+    model: typeof payload.model === 'string' && payload.model.trim() ? payload.model : model,
     latencyMs,
     inputTokens,
     outputTokens,
     costCents,
-    receipt: { provider: 'openrouter', requestId: response.headers.get('x-request-id'), model, usage: payload.usage || null },
+    receipt: { provider: 'openrouter', requestId: response.headers.get('x-request-id') || payload.id || null, model: typeof payload.model === 'string' && payload.model.trim() ? payload.model : model, usage: payload.usage || null },
   };
 }
 
-async function executeDocumentationJob(prisma, job) {
+async function executeDocumentationJob(prisma, job, execution) {
+  if (!execution) { const owned = jobExecution(prisma, job); try { await owned.check(); return await executeDocumentationJob(prisma, job, owned); } finally { owned.stop(); } }
+  await execution.check();
   const request = validateToolRequest(job.input);
   const repository = await prisma.repository.findFirst({ where: { id: request.repositoryId, tenantId: request.tenantId } });
   if (!repository) throw new DomainError('NOT_FOUND', 'repository not found in this tenant', 404);
@@ -341,7 +421,9 @@ async function executeDocumentationJob(prisma, job) {
     })),
   });
   const envelope = buildGroundedEnvelope(request, selection);
-  const provider = await runWithTimeout(() => callDocumentationProvider(envelope, job), job.timeoutMs);
+  await execution.check();
+  const provider = await callDocumentationProvider(envelope, job, execution.signal);
+  await execution.check();
   const evaluation = evaluateOutput({
     output: provider.output,
     sources: selection.sources,
@@ -353,6 +435,7 @@ async function executeDocumentationJob(prisma, job) {
   });
   const status = evaluation.decision === 'BLOCK' ? 'FAILED' : evaluation.decision === 'REVIEW' || request.requireApproval ? 'AWAITING_APPROVAL' : 'COMPLETED';
   return prisma.$transaction(async (tx) => {
+    await execution.check(tx);
     const run = await tx.aiRun.create({
       data: {
         tenantId: job.tenantId, jobId: job.id, requestedById: job.requestedById, toolName: job.kind, model: provider.model,
@@ -363,34 +446,32 @@ async function executeDocumentationJob(prisma, job) {
         gateDecision: evaluation.decision, traceId: job.traceId,
       },
     });
-    const updated = await tx.governedToolJob.update({
-      where: { id: job.id },
-      data: {
+    await execution.check(tx);
+    const updated = await execution.finish(tx, {
         status, output: evaluation.decision === 'BLOCK' ? undefined : provider.output,
         error: evaluation.decision === 'BLOCK' ? { code: 'QUALITY_GATE_BLOCK', reasons: evaluation.reasons } : undefined,
         leaseOwner: null, leaseExpiresAt: null, completedAt: status === 'COMPLETED' || status === 'FAILED' ? new Date() : null,
-      },
     });
     await tx.auditLog.create({
       data: { userId: job.requestedById, action: 'UPDATE', entityType: 'AiRun', entityId: run.id, newValues: { gateDecision: evaluation.decision, reasons: evaluation.reasons, outputDigest: digest(provider.output), traceId: job.traceId } },
     });
+    execution.signal.throwIfAborted();
     return updated;
   });
 }
 
 async function executeClaimedJob(prisma, job) {
-  if (job.cancelRequestedAt) {
-    return prisma.governedToolJob.update({ where: { id: job.id }, data: { status: 'CANCELLED', leaseOwner: null, leaseExpiresAt: null, completedAt: new Date() } });
-  }
+  if (job.cancelRequestedAt) return failJob(prisma, job, cancelledError());
+  const execution = jobExecution(prisma, job);
   try {
+    await execution.check();
     if (job.kind === 'REPOSITORY_SYNC') {
-      const result = await runWithTimeout(() => executeRepositorySync(prisma, job), job.timeoutMs);
-      return prisma.governedToolJob.update({ where: { id: job.id }, data: { status: 'COMPLETED', output: result, leaseOwner: null, leaseExpiresAt: null, completedAt: new Date() } });
+      return await executeRepositorySync(prisma, job, execution);
     }
-    return await executeDocumentationJob(prisma, job);
+    return await executeDocumentationJob(prisma, job, execution);
   } catch (error) {
-    return failJob(prisma, job, error);
-  }
+    return failJob(prisma, { ...job, syncRunId: execution.syncRunId }, execution.signal.aborted ? execution.signal.reason : error);
+  } finally { execution.stop(); }
 }
 
 module.exports = {
@@ -402,4 +483,5 @@ module.exports = {
   executeRepositorySync,
   executeDocumentationJob,
   executeClaimedJob,
+  requestJobCancellation,
 };

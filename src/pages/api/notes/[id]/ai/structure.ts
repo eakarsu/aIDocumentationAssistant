@@ -1,3 +1,4 @@
+import {withAiRequest,aiFailureStatus} from '@/lib/ai-request';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import prisma from '@/lib/prisma';
 import { getCurrentUser, createAuditLog } from '@/lib/auth';
@@ -36,23 +37,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(404).json({ error: 'Note not found' });
     }
 
+    if(user.role!=='ADMIN'&&note.authorId!==user.id)return res.status(403).json({error:'Only the author or administrator can structure this note'});
+    if(note.status!=='DRAFT')return res.status(409).json({error:'Only an unsigned draft can be structured'});
+    await withAiRequest(req,res,async signal=>{
     const templateSections = note.template?.sections || [];
-    const structuredContent = await structureNote(transcription, templateSections as object[]);
+    const structuredContent = await structureNote(transcription, templateSections as object[],signal);
 
     // Update note with structured content
-    await prisma.note.update({
-      where: { id: id as string },
+    await prisma.$transaction(async tx=>{signal.throwIfAborted();const saved=await tx.note.updateMany({
+      where: { id: id as string, status:'DRAFT', updatedAt:note.updatedAt },
       data: {
         content: structuredContent,
         aiTranscription: transcription,
       },
+    });if(saved.count!==1)throw Object.assign(new Error('The draft changed while AI was running. Review it before generating again.'),{status:409});signal.throwIfAborted();});
+
+    signal.throwIfAborted();await createAuditLog(user.id, 'UPDATE', 'Note', id as string, null, { aiAction: 'structure' }, req);
+
+    signal.throwIfAborted();res.status(200).json({ content: structuredContent });
     });
-
-    await createAuditLog(user.id, 'UPDATE', 'Note', id as string, null, { aiAction: 'structure' }, req);
-
-    res.status(200).json({ content: structuredContent });
   } catch (error) {
-    console.error('AI structure error:', error);
-    res.status(500).json({ error: 'Failed to structure note' });
+    if(!res.destroyed&&!res.writableEnded)res.status(aiFailureStatus(error)).json({error:error instanceof Error?error.message:'AI provider failed'});
   }
 }

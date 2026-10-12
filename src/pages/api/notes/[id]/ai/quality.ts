@@ -1,3 +1,4 @@
+import {withAiRequest,aiFailureStatus} from '@/lib/ai-request';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import prisma from '@/lib/prisma';
 import { getCurrentUser, createAuditLog } from '@/lib/auth';
@@ -24,27 +25,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const note = await prisma.note.findUnique({
       where: { id: id as string },
+      include:{coSignatures:{select:{signerId:true}}},
     });
 
     if (!note) {
       return res.status(404).json({ error: 'Note not found' });
     }
+    if(user.role!=='ADMIN'&&note.authorId!==user.id&&!note.coSignatures.some(signature=>signature.signerId===user.id))return res.status(403).json({error:'Access denied'});
+    await withAiRequest(req,res,async signal=>{
 
-    const result = await performQualityCheck(note.content as object, note.noteType);
+    const result = await performQualityCheck(note.content as object, note.noteType,signal);
 
     // Update note with quality score
-    await prisma.note.update({
+    await prisma.$transaction(async tx=>{signal.throwIfAborted();await tx.note.update({
       where: { id: id as string },
       data: {
         aiQualityScore: result.score,
+        aiResults: {
+          ...(note.aiResults && typeof note.aiResults === 'object' && !Array.isArray(note.aiResults) ? note.aiResults : {}),
+          quality: result,
+        } as any,
       },
+    });signal.throwIfAborted();});
+
+    signal.throwIfAborted();await createAuditLog(user.id, 'UPDATE', 'Note', id as string, null, { aiAction: 'quality_check' }, req);
+
+    signal.throwIfAborted();res.status(200).json(result);
     });
-
-    await createAuditLog(user.id, 'UPDATE', 'Note', id as string, null, { aiAction: 'quality_check' }, req);
-
-    res.status(200).json(result);
   } catch (error) {
-    console.error('AI quality check error:', error);
-    res.status(500).json({ error: 'Failed to perform quality check' });
+    if(!res.destroyed&&!res.writableEnded)res.status(aiFailureStatus(error)).json({error:error instanceof Error?error.message:'AI provider failed'});
   }
 }

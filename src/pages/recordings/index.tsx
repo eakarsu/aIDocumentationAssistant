@@ -18,6 +18,9 @@ export default function RecordingsPage() {
   const { isAuthenticated, isLoading } = useAuth();
   const router = useRouter();
   const { addToast } = useToast();
+  const aiRequest=useRef<AbortController|null>(null);
+  const [transcribing,setTranscribing]=useState(false);
+  useEffect(()=>()=>{aiRequest.current?.abort();aiRequest.current=null;},[]);
   const [recordings, setRecordings] = useState<any[]>([]);
   const [recordingTypes, setRecordingTypes] = useState<EnumOption[]>([]);
   const [recordingStatuses, setRecordingStatuses] = useState<EnumOption[]>([]);
@@ -173,13 +176,15 @@ export default function RecordingsPage() {
   };
 
   const handleTranscribe = async (id: string) => {
+    if(aiRequest.current)return;const controller=new AbortController();aiRequest.current=controller;setTranscribing(true);
     try {
-      await api.transcribeRecording(id);
-      addToast('Transcription started. Refresh to see results.', 'info');
+      await api.transcribeRecording(id,controller.signal);
+      if(controller.signal.aborted)return;
+      addToast('Transcription completed and saved for review.', 'info');
       loadRecordings();
     } catch (error: any) {
-      addToast(error.message || 'Failed to transcribe recording', 'error');
-    }
+      if(!controller.signal.aborted)addToast(error.message || 'Failed to transcribe recording', 'error');
+    }finally{if(aiRequest.current===controller){aiRequest.current=null;setTranscribing(false);}}
   };
 
   // Row click handler
@@ -299,6 +304,7 @@ export default function RecordingsPage() {
         </button>
       </div>
 
+      {transcribing&&<button type="button" className="btn btn-outline" onClick={()=>{aiRequest.current?.abort();aiRequest.current=null;setTranscribing(false);}}>Cancel transcription</button>}
       {/* Recording Controls */}
       <div className="card mb-6">
         <h2 className="text-lg font-semibold mb-4">New Recording</h2>
@@ -452,6 +458,7 @@ export default function RecordingsPage() {
                         <div className="flex space-x-2">
                           {recording.status === 'PROCESSING' && (
                             <button
+                              disabled={transcribing}
                               onClick={() => handleTranscribe(recording.id)}
                               className="text-blue-600 hover:text-blue-700"
                             >

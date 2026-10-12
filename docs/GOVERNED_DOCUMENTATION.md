@@ -18,6 +18,10 @@ Provider output must be strict `documentation-tool/v1` JSON with bounded title, 
 
 Jobs enforce tenant-scoped idempotency and creation rate limits. Workers use `FOR UPDATE SKIP LOCKED`, bounded leases and timeouts, exponential retry, dead letters, cooperative cancellation, and trace IDs. Audit logs store digests and decisions instead of raw prompts. Provider receipts record model, request ID, usage, cost, and latency without credentials.
 
+Cancel persists the requester or tenant administrator's decision and its audit in one transaction, marks the job cancelled, and releases its lease. Active workers check that persistent state every 250 milliseconds and abort their provider or connector request. Result, indexing, and completion writes verify the current lease and cancellation marker in their native transaction; an accepted cancellation prevents a late response from creating an AI run or committing a new source snapshot. An already committed result or earlier attempt remains evidence. Approval decisions still require a native reviewer role and both attestations; a concurrent cancellation prevents a pending approval from committing.
+
+Failed jobs with an evaluated AI run retain that immutable evidence. Revise the request and create a new job instead of retrying that evidence record. Provider failures before an AI run exists retain their bounded retry path. Blocked output remains available only as stored governance evidence and is omitted from the job detail response.
+
 Run the worker separately from the web process:
 
 ```bash

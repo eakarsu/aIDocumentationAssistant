@@ -16,6 +16,10 @@ export default function EditNotePage() {
   const [transcribing, setTranscribing] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const [recordedAudio,setRecordedAudio]=useState<Blob|null>(null);
+  const aiRequest=useRef<AbortController|null>(null);
+  const cancelAI=()=>{aiRequest.current?.abort();aiRequest.current=null;setTranscribing(false);};
+  useEffect(()=>()=>{aiRequest.current?.abort();aiRequest.current=null;if(mediaRecorderRef.current?.state==='recording')mediaRecorderRef.current.stop();},[id]);
   const autoSaveTimer = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
@@ -108,7 +112,7 @@ export default function EditNotePage() {
 
       mediaRecorder.onstop = async () => {
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-        await handleTranscription(blob);
+        setRecordedAudio(blob);
         stream.getTracks().forEach(track => track.stop());
       };
 
@@ -128,6 +132,7 @@ export default function EditNotePage() {
   };
 
   const handleTranscription = async (blob: Blob) => {
+    if(aiRequest.current)return;const controller=new AbortController();aiRequest.current=controller;
     setTranscribing(true);
     try {
       const formData = new FormData();
@@ -136,7 +141,7 @@ export default function EditNotePage() {
       formData.append('type', 'AUDIO');
 
       const response = await fetch('/api/recordings', {
-        method: 'POST',
+        method: 'POST',signal:controller.signal,
         headers: {
           Authorization: `Bearer ${localStorage.getItem('token')}`,
         },
@@ -146,18 +151,20 @@ export default function EditNotePage() {
       if (!response.ok) throw new Error('Upload failed');
 
       const recording = await response.json();
-      const transcription = await api.transcribeRecording(recording.id);
+      controller.signal.throwIfAborted();
+      const transcription = await api.transcribeRecording(recording.id,controller.signal);
+      controller.signal.throwIfAborted();
 
       // Structure the transcription if template exists
       if (note?.template?.sections) {
-        const structured = await api.structureNote(id as string, transcription.transcription);
-        setContent(prev => ({ ...prev, ...structured.content }));
+        const structured = await api.structureNote(id as string, transcription.transcription,controller.signal);
+        if(!controller.signal.aborted)setContent(prev => ({ ...prev, ...structured.content }));
       }
     } catch (error) {
       console.error('Transcription failed:', error);
-      alert('Failed to transcribe recording');
+      if(!controller.signal.aborted)alert(error instanceof Error?error.message:'Failed to transcribe recording');
     } finally {
-      setTranscribing(false);
+      if(aiRequest.current===controller){aiRequest.current=null;setTranscribing(false);}
     }
   };
 
@@ -219,6 +226,8 @@ export default function EditNotePage() {
             )}
           </div>
 
+          {recordedAudio&&<button type="button" className="btn btn-outline" disabled={transcribing} onClick={()=>void handleTranscription(recordedAudio)}>Generate transcript and draft</button>}
+          {transcribing&&<button type="button" className="btn btn-outline" onClick={cancelAI}>Cancel AI request</button>}
           {/* Save Controls */}
           <button
             onClick={() => router.push(`/notes/${id}`)}

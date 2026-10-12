@@ -1,4 +1,4 @@
-import { useState, FormEvent } from 'react';
+import { useRef, useState, FormEvent } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
@@ -8,6 +8,9 @@ const demoEmail = demoEnabled ? process.env.NEXT_PUBLIC_DEMO_EMAIL || '' : '';
 const demoPassword = demoEnabled ? process.env.NEXT_PUBLIC_DEMO_PASSWORD || '' : '';
 
 export default function Login() {
+  const demoLoginLock = useRef(false);
+  const [demoLoginBusy, setDemoLoginBusy] = useState(false);
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -20,17 +23,40 @@ export default function Login() {
     return null;
   }
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
+  const authenticate = async (credentials: { email: string; password: string }) => {
     setError('');
     setIsLoading(true);
 
     try {
-      await login(email, password);
+      await login(credentials.email, credentials.password);
     } catch (err: any) {
       setError(err.message || 'Login failed');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    await authenticate({ email, password });
+  };
+
+  const handleDemoLogin = async () => {
+    if (demoLoginLock.current) return;
+    if (!demoEmail || !demoPassword) {
+      setError('Demo credentials are unavailable.');
+      return;
+    }
+
+    demoLoginLock.current = true;
+    setDemoLoginBusy(true);
+    setEmail(demoEmail);
+    setPassword(demoPassword);
+    try {
+      await authenticate({ email: demoEmail, password: demoPassword });
+    } finally {
+      demoLoginLock.current = false;
+      setDemoLoginBusy(false);
     }
   };
 
@@ -123,14 +149,12 @@ export default function Login() {
             <div className="flex gap-2 justify-center">
               <button
                 type="button"
-                onClick={() => {
-                  setEmail(demoEmail);
-                  setPassword(demoPassword);
-                }}
-                disabled={!demoEmail || !demoPassword}
+                onClick={() => void handleDemoLogin()}
+                disabled={demoLoginBusy || isLoading || !demoEmail || !demoPassword}
+                data-demo-login="true"
                 className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-xs"
               >
-                Auto Fill Demo Credentials
+                Log In as Demo
               </button>
               <button
                 type="button"
