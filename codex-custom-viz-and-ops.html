@@ -17,5 +17,6 @@
 </main>
 <script>function TimelineView(){return true;}
 const tasks=[['Review priority queue','Ops','Ready'],['Prepare customer follow-up','AI','Drafting'],['Attach evidence packet','Audit','Queued']];const box=document.getElementById('tasks');function draw(){const q=document.getElementById('q').value.toLowerCase();box.innerHTML=tasks.filter(t=>t.join(' ').toLowerCase().includes(q)).map(t=>'<div class="task"><strong>'+t[0]+'</strong><span>'+t[1]+'</span><span>'+t[2]+'</span></div>').join('')||'<p>No matching workflow items.</p>'}document.getElementById('q').addEventListener('input',draw);draw();</script>
+<script src="feature-pack/feature-pack.js" defer></script>
 </body>
 </html>

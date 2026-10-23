@@ -1,16 +1,9 @@
-import { useRef, useState, FormEvent } from 'react';
+import { useState, FormEvent } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 
-const demoEnabled = process.env.NEXT_PUBLIC_ENABLE_DEMO_CREDENTIAL_AUTOFILL === 'true';
-const demoEmail = demoEnabled ? process.env.NEXT_PUBLIC_DEMO_EMAIL || '' : '';
-const demoPassword = demoEnabled ? process.env.NEXT_PUBLIC_DEMO_PASSWORD || '' : '';
-
 export default function Login() {
-  const demoLoginLock = useRef(false);
-  const [demoLoginBusy, setDemoLoginBusy] = useState(false);
-
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -39,25 +32,6 @@ export default function Login() {
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     await authenticate({ email, password });
-  };
-
-  const handleDemoLogin = async () => {
-    if (demoLoginLock.current) return;
-    if (!demoEmail || !demoPassword) {
-      setError('Demo credentials are unavailable.');
-      return;
-    }
-
-    demoLoginLock.current = true;
-    setDemoLoginBusy(true);
-    setEmail(demoEmail);
-    setPassword(demoPassword);
-    try {
-      await authenticate({ email: demoEmail, password: demoPassword });
-    } finally {
-      demoLoginLock.current = false;
-      setDemoLoginBusy(false);
-    }
   };
 
   return (
@@ -144,42 +118,7 @@ export default function Login() {
             </Link>
           </p>
 
-          <div className="text-center text-sm text-gray-500">
-            <p className="mb-2">Quick login:</p>
-            <div className="flex gap-2 justify-center">
-              <button
-                type="button"
-                onClick={() => void handleDemoLogin()}
-                disabled={demoLoginBusy || isLoading || !demoEmail || !demoPassword}
-                data-demo-login="true"
-                className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-xs"
-              >
-                Log In as Demo
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setEmail('dr.smith@healthcare.com');
-                  setPassword(demoPassword);
-                }}
-                disabled={!demoPassword}
-                className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-xs"
-              >
-                Doctor
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setEmail('nurse.jones@healthcare.com');
-                  setPassword(demoPassword);
-                }}
-                disabled={!demoPassword}
-                className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-xs"
-              >
-                Nurse
-              </button>
-            </div>
-          </div>
+        <button type="button" onClick={(e) => { e.preventDefault(); setEmail('admin@demo.local'); setPassword('Demo!23456'); }}>Log In as Demo</button>
         </form>
       </div>
     </div>
